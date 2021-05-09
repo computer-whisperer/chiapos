@@ -28,6 +28,7 @@
 #include "./disk.hpp"
 #include "./quicksort.hpp"
 #include "./uniformsort.hpp"
+#include "./threadeduniformsort.hpp"
 #include "disk.hpp"
 #include "exceptions.hpp"
 

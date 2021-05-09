@@ -22,6 +22,8 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 // enables disk I/O logging to disk.log
 // use tools/disk.gnuplot to generate a plot
@@ -104,10 +106,23 @@ struct FileDisk {
         Open(writeFlag);
     }
 
+    uint8_t *read_mapped = NULL;
+    uint64_t read_mapped_len = 0;
+
     void Open(uint8_t flags = 0)
     {
-        // if the file is already open, don't do anything
-        if (f_) return;
+        // if the file is already open in the current read or write config, don't do anything
+        if (f_)
+        {
+        	if (!(flags & writeFlag) == (read_mapped != NULL))
+        	{
+        		return;
+        	}
+        	else
+        	{
+        		Close();
+        	}
+        }
 
         // Opens the file for reading and writing
         do {
@@ -127,6 +142,20 @@ struct FileDisk {
                 }
             }
         } while (f_ == nullptr);
+
+        if (!(flags&writeFlag))
+        {
+            struct stat sb;
+            fstat(fileno(f_), &sb);
+            read_mapped_len = sb.st_size;
+            read_mapped = (uint8_t *) mmap(NULL, read_mapped_len, PROT_READ, MAP_SHARED, fileno(f_), 0);
+            if (read_mapped == MAP_FAILED)
+            {
+                perror("Error mmapping the file");
+                exit(EXIT_FAILURE);
+            }
+        }
+
     }
 
     FileDisk(FileDisk &&fd)
@@ -141,6 +170,10 @@ struct FileDisk {
 
     void Close()
     {
+    	if (read_mapped)
+    	{
+    		munmap(read_mapped, read_mapped_len);
+    	}
         if (f_ == nullptr) return;
         ::fclose(f_);
         f_ = nullptr;
@@ -150,40 +183,22 @@ struct FileDisk {
 
     ~FileDisk() { Close(); }
 
+
+
     void Read(uint64_t begin, uint8_t *memcache, uint64_t length)
     {
-        Open(retryOpenFlag);
 #if ENABLE_LOGGING
         disk_log(filename_, op_t::read, begin, length);
 #endif
-        // Seek, read, and replace into memcache
-        uint64_t amtread;
-        do {
-            if ((!bReading) || (begin != readPos)) {
-#ifdef _WIN32
-                _fseeki64(f_, begin, SEEK_SET);
-#else
-                // fseek() takes a long as offset, make sure it's wide enough
-                static_assert(sizeof(long) >= sizeof(begin));
-                ::fseek(f_, begin, SEEK_SET);
-#endif
-                bReading = true;
-            }
-            amtread = ::fread(reinterpret_cast<char *>(memcache), sizeof(uint8_t), length, f_);
-            readPos = begin + amtread;
-            if (amtread != length) {
-                std::cout << "Only read " << amtread << " of " << length << " bytes at offset "
-                          << begin << " from " << filename_ << "with length " << writeMax
-                          << ". Error " << ferror(f_) << ". Retrying in five minutes." << std::endl;
-                // Close, Reopen, and re-seek the file to recover in case the filesystem
-                // has been remounted.
-                Close();
-                bReading = false;
-                std::this_thread::sleep_for(5min);
-                Open(retryOpenFlag);
-            }
-        } while (amtread != length);
+    if (read_mapped == NULL)
+    {
+      Open();
     }
+        // Seek, read, and replace into memcache
+
+        memcpy(memcache, read_mapped + begin, length);
+    }
+
 
     void Write(uint64_t begin, const uint8_t *memcache, uint64_t length)
     {
@@ -222,6 +237,8 @@ struct FileDisk {
             }
         } while (amtwritten != length);
     }
+
+
 
     std::string GetFileName() { return filename_.string(); }
 

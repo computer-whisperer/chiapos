@@ -20,6 +20,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <ctime>
 
 #include "./disk.hpp"
 #include "./util.hpp"
@@ -44,6 +45,7 @@ namespace UniformSort {
         uint64_t const num_entries,
         uint32_t const bits_begin)
     {
+    	time_t start_time = std::time(NULL);
         uint64_t const memory_len = Util::RoundSize(num_entries) * entry_len;
         auto const swap_space = std::make_unique<uint8_t[]>(entry_len);
         auto const buffer = std::make_unique<uint8_t[]>(BUF_SIZE);
@@ -102,6 +104,8 @@ namespace UniformSort {
         }
 
         assert(entries_written == num_entries);
+
+        std::cout << "Uniform sort took " << std::time(NULL) - start_time << "seconds." << std::endl;
     }
 
 }
