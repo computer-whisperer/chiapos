@@ -302,7 +302,7 @@ private:
             std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
                       << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
                       << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
-            UniformSort::SortToMemory(
+            ThreadedUniformSort::SortToMemory(
                 b.underlying_file,
                 0,
                 memory_start_.get(),
