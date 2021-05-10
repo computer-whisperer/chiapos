@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SRC_CPP_FAST_SORT_ON_DISK_HPP_
-#define SRC_CPP_FAST_SORT_ON_DISK_HPP_
+#ifndef SRC_CPP_SORT_MANAGER_HPP_
+#define SRC_CPP_SORT_MANAGER_HPP_
 
 #include <algorithm>
 #include <fstream>

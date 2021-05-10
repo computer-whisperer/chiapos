@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SRC_CPP_THREADEDUNIFORMSORT_HPP_
-#define SRC_CPP_THREADEDUNIFORMSORT_HPP_
+#ifndef SRC_CPP_RADIXSORT_HPP_
+#define SRC_CPP_RADIXSORT_HPP_
 
 #include <algorithm>
 #include <fstream>
@@ -25,9 +25,10 @@
 
 #include "./disk.hpp"
 #include "./util.hpp"
+#include "./buffers.hpp"
 
 using namespace std;
-namespace ThreadedUniformSort {
+namespace RadixSort {
 
     inline uint64_t const num_threads = 4;
     inline uint64_t const first_sort_bits = 8;
@@ -42,7 +43,7 @@ namespace ThreadedUniformSort {
     }
 
     vector<vector<uint8_t>>* SortThreadA(
-    	FileDisk *input_disk,
+    	Buffer &input_buff,
     	uint64_t const start_offset,
       uint64_t const num_entries,
       uint32_t const entry_len,
@@ -59,7 +60,7 @@ namespace ThreadedUniformSort {
     	}
     	for (uint64_t i = 0; i < num_entries; i++)
     	{
-    		uint8_t * latest_entry = input_disk->read_mapped + start_offset + entry_len*i;
+    		uint8_t * latest_entry = input_buff.data + start_offset + entry_len*i;
         uint32_t bucket_num = Util::ExtractNum(latest_entry, entry_len, bits_begin, first_sort_bits);
         (*sort_buckets)[bucket_num].insert((*sort_buckets)[bucket_num].end(), latest_entry, latest_entry+entry_len);
         thread_bucket_lens[bucket_num] += entry_len;
@@ -158,16 +159,21 @@ namespace ThreadedUniformSort {
     	}
     }
 
-    void SortToMemory(
-        FileDisk &input_disk,
-        uint64_t const input_disk_begin,
-        uint8_t *const memory,
+    Buffer * SortToMemory(
+        Buffer &src_buff,
         uint32_t const entry_len,
-        uint64_t const num_entries,
-        uint32_t const bits_begin)
+        uint64_t const num_entries)
     {
     	time_t start_time = std::time(NULL);
+      Buffer dest_buff(src_buff.data_len);
     	input_disk.Open();
+      
+      // Get checksum of input data first
+      uint64_t csum = 0;
+      for (uint32_t i = 0; i < (entry_len*num_entries); i++)
+      {
+        csum += input_disk.read_mapped[i];
+      }
 
         // Start of parallel execution
         vector<future<vector<vector<uint8_t>>*>> thread_a_futures;
@@ -186,7 +192,7 @@ namespace ThreadedUniformSort {
             {
             	entries_for_thread = entries_left;
             }
-            thread_a_futures.push_back(async(SortThreadA, &input_disk, offset, entries_for_thread, entry_len, bits_begin, &bucket_set_lens));
+            thread_a_futures.push_back(async(SortThreadA, &input_buff, offset, entries_for_thread, entry_len, 0, &bucket_set_lens));
             entries_left -= entries_for_thread;
             offset += entries_for_thread*entry_len;
         }
@@ -222,7 +228,7 @@ namespace ThreadedUniformSort {
               num_bucket_sets_for_thread = num_bucket_sets - bucket_sets_offset;
             }
             
-            thread_b_futures.push_back(thread(SortThreadB, entry_len, &sort_buckets, bucket_sets_offset, num_bucket_sets_for_thread, memory+bucket_offsets[bucket_sets_offset], &bucket_set_lens_notatomic, bits_begin+first_sort_bits));
+            thread_b_futures.push_back(thread(SortThreadB, entry_len, &sort_buckets, bucket_sets_offset, num_bucket_sets_for_thread, dest_buff.data+bucket_offsets[bucket_sets_offset], &bucket_set_lens_notatomic, first_sort_bits));
             bucket_sets_offset += num_bucket_sets_for_thread;
         }
         
@@ -247,6 +253,13 @@ namespace ThreadedUniformSort {
         
         assert(offset_ctr == num_entries*entry_len);
         
+        uint64_t post_csum = 0;
+        for (uint32_t i = 0; i < (entry_len*num_entries); i++)
+        {
+          post_csum += memory[i];
+        }
+        assert(csum == post_csum);
+        
         for (uint32_t i = 0; i < num_bucket_sets; i++)
         {
           delete bucket_set_lens[i];
@@ -256,6 +269,7 @@ namespace ThreadedUniformSort {
           delete(sort_buckets[i]);
         }
         
+        return dest_buff;
     }
 
 }

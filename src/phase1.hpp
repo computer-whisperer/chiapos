@@ -42,10 +42,10 @@
 #include "entry_sizes.hpp"
 #include "exceptions.hpp"
 #include "pos_constants.hpp"
-#include "sort_manager.hpp"
 #include "threading.hpp"
 #include "util.hpp"
 #include "progress.hpp"
+#include "buffers.hpp"
 
 struct THREADDATA {
     int index;
@@ -66,8 +66,8 @@ struct GlobalData {
     uint64_t left_writer_count;
     uint64_t right_writer_count;
     uint64_t matches;
-    std::unique_ptr<SortManager> L_sort_manager;
-    std::unique_ptr<SortManager> R_sort_manager;
+    std::unique_ptr<Buffer> L_Buffer;
+    std::unique_ptr<Buffer> R_Buffer;
     uint64_t left_writer_buf_entries;
     uint64_t left_writer;
     uint64_t right_writer;
@@ -128,7 +128,7 @@ void* phase1_thread(THREADDATA* ptd)
     uint8_t const pos_size = ptd->pos_size;
     uint64_t const prevtableentries = ptd->prevtableentries;
     uint32_t const compressed_entry_size_bytes = ptd->compressed_entry_size_bytes;
-    std::vector<FileDisk>* ptmp_1_disks = ptd->ptmp_1_disks;
+    std::vector<Buffer>* ptmp_1_buffs = ptd->ptmp_1_buffs;
 
     // Streams to read and right to tables. We will have handles to two tables. We will
     // read through the left table, compute matches, and evaluate f for matching entries,
@@ -208,6 +208,7 @@ void* phase1_thread(THREADDATA* ptd)
             if (!first_thread) {
                 Sem::Wait(ptd->theirs);
             }
+            
             globals.L_sort_manager->TriggerNewBucket(left_reader);
         }
         if (!last_thread) {
@@ -530,17 +531,14 @@ void* phase1_thread(THREADDATA* ptd)
     return 0;
 }
 
-void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* smm)
+void* F1thread(uint64_t index, uint8_t const k, const uint8_t* id)
 {
     uint32_t const entry_size_bytes = 16;
     uint64_t const max_value = ((uint64_t)1 << (k));
     uint64_t const right_buf_entries = 1 << (kBatchSizes);
 
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
-
     F1Calculator f1(k, id);
-
-    std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * entry_size_bytes]);
 
     // Instead of computing f1(1), f1(2), etc, for each x, we compute them in batches
     // to increase CPU efficency.
@@ -548,8 +546,9 @@ void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* 
          lp = lp + globals.num_threads)
     {
         // For each pair x, y in the batch
+        
+        uint8_t * dest = globals.L_sort_manager->data + right_buf_entries * entry_size_bytes * lp;
 
-        uint64_t right_writer_count = 0;
         uint64_t x = lp * (1 << (kBatchSizes));
 
         uint64_t const loopcount = std::min(max_value - x, (uint64_t)1 << (kBatchSizes));
@@ -558,22 +557,13 @@ void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* 
         // to increase CPU efficency.
         f1.CalculateBuckets(x, loopcount, f1_entries.get());
         for (uint32_t i = 0; i < loopcount; i++) {
-            uint8_t to_write[16];
             uint128_t entry;
 
             entry = (uint128_t)f1_entries[i] << (128 - kExtraBits - k);
             entry |= (uint128_t)x << (128 - kExtraBits - 2 * k);
-            Util::IntTo16Bytes(to_write, entry);
-            memcpy(&(right_writer_buf[i * entry_size_bytes]), to_write, 16);
-            right_writer_count++;
+            Util::IntTo16Bytes(dest, entry);
             x++;
-        }
-
-        std::lock_guard<std::mutex> l(*smm);
-
-        // Write it out
-        for (uint32_t i = 0; i < right_writer_count; i++) {
-            globals.L_sort_manager->AddToCache(&(right_writer_buf[i * entry_size_bytes]));
+            dest += entry_size_bytes;
         }
     }
 
@@ -587,11 +577,9 @@ void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* 
 // ChaCha8, and each encryption provides multiple output values. Then, the rest of the
 // f functions are computed, and a sort on disk happens for each table.
 std::vector<uint64_t> RunPhase1(
-    std::vector<FileDisk>& tmp_1_disks,
+    std::vector<Buffer>& tmp_1_buffs,
     uint8_t const k,
     const uint8_t* const id,
-    std::string const tmp_dirname,
-    std::string const filename,
     uint64_t const memory_size,
     uint32_t const num_buckets,
     uint32_t const log_num_buckets,
@@ -608,26 +596,12 @@ std::vector<uint64_t> RunPhase1(
     uint64_t x = 0;
 
     uint32_t const t1_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, 1, true);
-    globals.L_sort_manager = std::make_unique<SortManager>(
-        memory_size,
-        num_buckets,
-        log_num_buckets,
-        t1_entry_size_bytes,
-        tmp_dirname,
-        filename + ".p1.t1",
-        0,
-        globals.stripe_size);
-
-    // These are used for sorting on disk. The sort on disk code needs to know how
-    // many elements are in each bucket.
-    std::vector<uint64_t> table_sizes = std::vector<uint64_t>(8, 0);
-    std::mutex sort_manager_mutex;
-
+    globals.L_Buffer = tmp_1_buffs[0];
     {
         // Start of parallel execution
         std::vector<std::thread> threads;
         for (int i = 0; i < num_threads; i++) {
-            threads.emplace_back(F1thread, i, k, id, &sort_manager_mutex);
+            threads.emplace_back(F1thread, i, k, id);
         }
 
         for (auto& t : threads) {
@@ -638,8 +612,6 @@ std::vector<uint64_t> RunPhase1(
 
     uint64_t prevtableentries = 1ULL << k;
     f1_start_time.PrintElapsed("F1 complete, time:");
-    globals.L_sort_manager->FlushCache();
-    table_sizes[1] = x + 1;
 
     // Store positions to previous tables, in k bits.
     uint8_t pos_size = k;
@@ -656,11 +628,13 @@ std::vector<uint64_t> RunPhase1(
         uint32_t compressed_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
         right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, true);
 
-        if (enable_bitfield && table_index != 1) {
+        if (enable_bitfield && table_index != 1) 
+        {
             // We only write pos and offset to tables 2-6 after removing
             // metadata
             compressed_entry_size_bytes = cdiv(k + kOffsetSize, 8);
-            if (table_index == 6) {
+            if (table_index == 6) 
+            {
                 // Table 7 will contain f7, pos and offset
                 right_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
             }
@@ -668,6 +642,9 @@ std::vector<uint64_t> RunPhase1(
 
         std::cout << "Computing table " << int{table_index + 1} << std::endl;
         // Start of parallel execution
+        
+        // Sort the table
+        RadixSort.SortToMemory(globals.L_Buffer, entry_size_bytes, prevtableentries);
 
         FxCalculator f(k, table_index + 1);  // dummy to load static table
 
@@ -677,34 +654,16 @@ std::vector<uint64_t> RunPhase1(
         globals.right_writer = 0;
         globals.left_writer = 0;
 
-        globals.R_sort_manager = std::make_unique<SortManager>(
-            memory_size,
-            num_buckets,
-            log_num_buckets,
-            right_entry_size_bytes,
-            tmp_dirname,
-            filename + ".p1.t" + std::to_string(table_index + 1),
-            0,
-            globals.stripe_size);
-
-        globals.L_sort_manager->TriggerNewBucket(0);
-
+        globals.R_Buffer = tmp_1_buffs[table_index+1];
+        
         Timer computation_pass_timer;
 
         auto td = std::make_unique<THREADDATA[]>(num_threads);
-        auto mutex = std::make_unique<Sem::type[]>(num_threads);
 
         std::vector<std::thread> threads;
 
         for (int i = 0; i < num_threads; i++) {
-            mutex[i] = Sem::Create();
-        }
-
-        for (int i = 0; i < num_threads; i++) {
             td[i].index = i;
-            td[i].mine = &mutex[i];
-            td[i].theirs = &mutex[(num_threads + i - 1) % num_threads];
-
             td[i].prevtableentries = prevtableentries;
             td[i].right_entry_size_bytes = right_entry_size_bytes;
             td[i].k = k;
@@ -713,18 +672,13 @@ std::vector<uint64_t> RunPhase1(
             td[i].entry_size_bytes = entry_size_bytes;
             td[i].pos_size = pos_size;
             td[i].compressed_entry_size_bytes = compressed_entry_size_bytes;
-            td[i].ptmp_1_disks = &tmp_1_disks;
+            td[i].ptmp_1_buffs = &tmp_1_buffs;
 
             threads.emplace_back(phase1_thread, &td[i]);
         }
-        Sem::Post(&mutex[num_threads - 1]);
 
         for (auto& t : threads) {
             t.join();
-        }
-
-        for (int i = 0; i < num_threads; i++) {
-            Sem::Destroy(mutex[i]);
         }
 
         // end of parallel execution
@@ -732,17 +686,19 @@ std::vector<uint64_t> RunPhase1(
         // Total matches found in the left table
         std::cout << "\tTotal matches: " << globals.matches << std::endl;
 
-        table_sizes[table_index] = globals.left_writer_count;
-        table_sizes[table_index + 1] = globals.right_writer_count;
+        table_sizes[table_index + 1] = globals.R_Buffer.insert_pos;
 
         // Truncates the file after the final write position, deleting no longer useful
         // working space
         tmp_1_disks[table_index].Truncate(globals.left_writer);
         globals.L_sort_manager.reset();
-        if (table_index < 6) {
-            globals.R_sort_manager->FlushCache();
-            globals.L_sort_manager = std::move(globals.R_sort_manager);
-        } else {
+        if (table_index < 6)
+        {
+          globals.L_Buffer = globals.R_Buffer;
+          globals.R_Buffer =  tmp_1_buffers[table_index+1];
+        } 
+        else 
+        {
             tmp_1_disks[table_index + 1].Truncate(globals.right_writer);
         }
 
