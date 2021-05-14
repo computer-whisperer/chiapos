@@ -47,10 +47,10 @@ struct b17Phase3Results {
 // backpropagation step happened, so there will be no more dropped entries. See the design
 // document for more details on the algorithm.
 b17Phase3Results b17RunPhase3(
-    uint8_t *memory,
+    //uint8_t *memory,
     uint8_t k,
     FileDisk &tmp2_disk /*filename*/,
-    std::vector<FileDisk> &tmp_1_disks /*plot_filename*/,
+    std::vector<Buffer*> pass2_buffers /*plot_filename*/,
     std::vector<uint64_t> table_sizes,
     const uint8_t *id,
     const std::string &tmp_dirname,

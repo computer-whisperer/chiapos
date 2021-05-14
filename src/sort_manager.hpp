@@ -28,7 +28,6 @@
 #include "./disk.hpp"
 #include "./quicksort.hpp"
 #include "./uniformsort.hpp"
-#include "./threadeduniformsort.hpp"
 #include "disk.hpp"
 #include "exceptions.hpp"
 
@@ -299,10 +298,10 @@ private:
         // (number of entries required * entry_size_) <= total memory available
         if (!force_quicksort &&
             Util::RoundSize(bucket_entries) * entry_size_ <= memory_size_) {
-            std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
+            std::cout << "\tBucket " << bucket_i << " radix sort. Ram: " << std::fixed
                       << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
                       << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
-            ThreadedUniformSort::SortToMemory(
+            UniformSort::SortToMemory(
                 b.underlying_file,
                 0,
                 memory_start_.get(),

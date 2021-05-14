@@ -173,6 +173,7 @@ struct FileDisk {
     	if (read_mapped)
     	{
     		munmap(read_mapped, read_mapped_len);
+        read_mapped = NULL;
     	}
         if (f_ == nullptr) return;
         ::fclose(f_);

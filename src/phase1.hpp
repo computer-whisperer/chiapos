@@ -38,6 +38,7 @@
 
 #include "chia_filesystem.hpp"
 
+#include "radixsort.hpp"
 #include "calculate_bucket.hpp"
 #include "entry_sizes.hpp"
 #include "exceptions.hpp"
@@ -49,96 +50,48 @@
 
 struct THREADDATA {
     int index;
-    Sem::type* mine;
-    Sem::type* theirs;
-    uint64_t right_entry_size_bytes;
-    uint8_t k;
-    uint8_t table_index;
     uint8_t metadata_size;
-    uint32_t entry_size_bytes;
     uint8_t pos_size;
-    uint64_t prevtableentries;
-    uint32_t compressed_entry_size_bytes;
-    std::vector<FileDisk>* ptmp_1_disks;
 };
 
 struct GlobalData {
-    uint64_t left_writer_count;
-    uint64_t right_writer_count;
-    uint64_t matches;
-    std::unique_ptr<Buffer> L_Buffer;
-    std::unique_ptr<Buffer> R_Buffer;
+    uint8_t k;
+    uint8_t table_index;
+    atomic<uint64_t> left_writer_count;
+    atomic<uint64_t> right_writer_count;
+    atomic<uint64_t> matches;
     uint64_t left_writer_buf_entries;
     uint64_t left_writer;
     uint64_t right_writer;
     uint64_t stripe_size;
     uint8_t num_threads;
+    std::vector<Buffer*> compressed_tables;
+    Buffer* unsorted_table;
+    Buffer* sorted_table;
 };
 
 GlobalData globals;
 
-PlotEntry GetLeftEntry(
-    uint8_t const table_index,
-    uint8_t const* const left_buf,
-    uint8_t const k,
-    uint8_t const metadata_size,
-    uint8_t const pos_size)
-{
-    PlotEntry left_entry;
-    left_entry.y = 0;
-    left_entry.read_posoffset = 0;
-    left_entry.left_metadata = 0;
-    left_entry.right_metadata = 0;
-
-    uint32_t const ysize = (table_index == 7) ? k : k + kExtraBits;
-
-    if (table_index == 1) {
-        // For table 1, we only have y and metadata
-        left_entry.y = Util::SliceInt64FromBytes(left_buf, 0, k + kExtraBits);
-        left_entry.left_metadata =
-            Util::SliceInt64FromBytes(left_buf, k + kExtraBits, metadata_size);
-    } else {
-        // For tables 2-6, we we also have pos and offset. We need to read this because
-        // this entry will be written again to the table without the y (and some entries
-        // are dropped).
-        left_entry.y = Util::SliceInt64FromBytes(left_buf, 0, ysize);
-        left_entry.read_posoffset =
-            Util::SliceInt64FromBytes(left_buf, ysize, pos_size + kOffsetSize);
-        if (metadata_size <= 128) {
-            left_entry.left_metadata =
-                Util::SliceInt128FromBytes(left_buf, ysize + pos_size + kOffsetSize, metadata_size);
-        } else {
-            // Large metadatas that don't fit into 128 bits. (k > 32).
-            left_entry.left_metadata =
-                Util::SliceInt128FromBytes(left_buf, ysize + pos_size + kOffsetSize, 128);
-            left_entry.right_metadata = Util::SliceInt128FromBytes(
-                left_buf, ysize + pos_size + kOffsetSize + 128, metadata_size - 128);
-        }
-    }
-    return left_entry;
-}
-
 void* phase1_thread(THREADDATA* ptd)
 {
-    uint64_t const right_entry_size_bytes = ptd->right_entry_size_bytes;
-    uint8_t const k = ptd->k;
-    uint8_t const table_index = ptd->table_index;
+    uint8_t const k = globals.k;
+    //uint64_t const right_entry_size_bytes = ptd->right_entry_size_bytes;
     uint8_t const metadata_size = ptd->metadata_size;
-    uint32_t const entry_size_bytes = ptd->entry_size_bytes;
+    //uint32_t const entry_size_bytes = ptd->entry_size_bytes;
     uint8_t const pos_size = ptd->pos_size;
-    uint64_t const prevtableentries = ptd->prevtableentries;
-    uint32_t const compressed_entry_size_bytes = ptd->compressed_entry_size_bytes;
-    std::vector<Buffer>* ptmp_1_buffs = ptd->ptmp_1_buffs;
+    //uint64_t const prevtableentries = ptd->prevtableentries;
+    //uint32_t const compressed_entry_size_bytes = ptd->compressed_entry_size_bytes;
+    //std::vector<FileDisk>* ptmp_1_disks = ptd->ptmp_1_disks;
 
     // Streams to read and right to tables. We will have handles to two tables. We will
     // read through the left table, compute matches, and evaluate f for matching entries,
     // writing results to the right table.
     uint64_t left_buf_entries = 5000 + (uint64_t)((1.1) * (globals.stripe_size));
     uint64_t right_buf_entries = 5000 + (uint64_t)((1.1) * (globals.stripe_size));
-    std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * right_entry_size_bytes + 7]);
-    std::unique_ptr<uint8_t[]> left_writer_buf(new uint8_t[left_buf_entries * compressed_entry_size_bytes + 7]);
+    std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * globals.unsorted_table->entry_len + 7]);
+    std::unique_ptr<uint8_t[]> left_writer_buf(new uint8_t[left_buf_entries * globals.compressed_tables[globals.table_index]->entry_len + 7]);
 
-    FxCalculator f(k, table_index + 1);
+    FxCalculator f(k, globals.table_index + 1);
 
     // Stores map of old positions to new positions (positions after dropping entries from L
     // table that did not match) Map ke
@@ -150,13 +103,13 @@ void* phase1_thread(THREADDATA* ptd)
 
     // Start at left table pos = 0 and iterate through the whole table. Note that the left table
     // will already be sorted by y
-    uint64_t totalstripes = (prevtableentries + globals.stripe_size - 1) / globals.stripe_size;
+    uint64_t totalstripes = (globals.sorted_table->entry_count + globals.stripe_size - 1) / globals.stripe_size;
     uint64_t threadstripes = (totalstripes + globals.num_threads - 1) / globals.num_threads;
 
     for (uint64_t stripe = 0; stripe < threadstripes; stripe++) {
         uint64_t pos = (stripe * globals.num_threads + ptd->index) * globals.stripe_size;
         uint64_t const endpos = pos + globals.stripe_size + 1;  // one y value overlap
-        uint64_t left_reader = pos * entry_size_bytes;
+        uint64_t left_reader = pos * globals.sorted_table->entry_len;
         uint64_t left_writer_count = 0;
         uint64_t stripe_left_writer_count = 0;
         uint64_t stripe_start_correction = 0xffffffffffffffff;
@@ -201,14 +154,13 @@ void* phase1_thread(THREADDATA* ptd)
             stripe_left_writer_count = 0;
             stripe_start_correction = 0;
         }
-
+/*
         Sem::Wait(ptd->theirs);
         need_new_bucket = globals.L_sort_manager->CloseToNewBucket(left_reader);
         if (need_new_bucket) {
             if (!first_thread) {
                 Sem::Wait(ptd->theirs);
             }
-            
             globals.L_sort_manager->TriggerNewBucket(left_reader);
         }
         if (!last_thread) {
@@ -216,10 +168,10 @@ void* phase1_thread(THREADDATA* ptd)
             // waited for us to finish when it starts
             Sem::Post(ptd->mine);
         }
-
-        while (pos < prevtableentries + 1) {
+*/
+        while (pos < globals.sorted_table->entry_count + 1) {
             PlotEntry left_entry = PlotEntry();
-            if (pos >= prevtableentries) {
+            if (pos >= globals.sorted_table->entry_count) {
                 end_of_table = true;
                 left_entry.y = 0;
                 left_entry.left_metadata = 0;
@@ -227,10 +179,39 @@ void* phase1_thread(THREADDATA* ptd)
                 left_entry.used = false;
             } else {
                 // Reads a left entry from disk
-                uint8_t* left_buf = globals.L_sort_manager->ReadEntry(left_reader);
-                left_reader += entry_size_bytes;
+                uint8_t* left_buf = globals.sorted_table->data + left_reader;
+                left_reader += globals.sorted_table->entry_len;
 
-                left_entry = GetLeftEntry(table_index, left_buf, k, metadata_size, pos_size);
+                left_entry.y = 0;
+                left_entry.read_posoffset = 0;
+                left_entry.left_metadata = 0;
+                left_entry.right_metadata = 0;
+
+                uint32_t const ysize = (globals.table_index == 6) ? k : k + kExtraBits;
+
+                if (globals.table_index == 0) {
+                    // For table 1, we only have y and metadata
+                    left_entry.y = Util::SliceInt64FromBytes(left_buf, 0, k + kExtraBits);
+                    left_entry.left_metadata =
+                        Util::SliceInt64FromBytes(left_buf, k + kExtraBits, metadata_size);
+                } else {
+                    // For tables 2-6, we we also have pos and offset. We need to read this because
+                    // this entry will be written again to the table without the y (and some entries
+                    // are dropped).
+                    left_entry.y = Util::SliceInt64FromBytes(left_buf, 0, ysize);
+                    left_entry.read_posoffset =
+                        Util::SliceInt64FromBytes(left_buf, ysize, pos_size + kOffsetSize);
+                    if (metadata_size <= 128) {
+                        left_entry.left_metadata =
+                            Util::SliceInt128FromBytes(left_buf, ysize + pos_size + kOffsetSize, metadata_size);
+                    } else {
+                        // Large metadatas that don't fit into 128 bits. (k > 32).
+                        left_entry.left_metadata =
+                            Util::SliceInt128FromBytes(left_buf, ysize + pos_size + kOffsetSize, 128);
+                        left_entry.right_metadata = Util::SliceInt128FromBytes(
+                            left_buf, ysize + pos_size + kOffsetSize + 128, metadata_size - 128);
+                    }
+                }
             }
 
             // This is not the pos that was read from disk,but the position of the entry we read,
@@ -336,18 +317,18 @@ void* phase1_thread(THREADDATA* ptd)
                                 throw InvalidStateException("Left writer count overrun");
                             }
                             uint8_t* tmp_buf =
-                                left_writer_buf.get() + left_writer_count * compressed_entry_size_bytes;
+                                left_writer_buf.get() + left_writer_count * globals.compressed_tables[globals.table_index]->entry_len;
 
                             left_writer_count++;
                             // memset(tmp_buf, 0xff, compressed_entry_size_bytes);
 
                             // Rewrite left entry with just pos and offset, to reduce working space
                             uint64_t new_left_entry;
-                            if (table_index == 1)
+                            if (globals.table_index == 1)
                                 new_left_entry = entry->left_metadata;
                             else
                                 new_left_entry = entry->read_posoffset;
-                            new_left_entry <<= 64 - (table_index == 1 ? k : pos_size + kOffsetSize);
+                            new_left_entry <<= 64 - (globals.table_index == 1 ? k : pos_size + kOffsetSize);
                             Util::IntToEightBytes(tmp_buf, new_left_entry);
                         }
                         stripe_left_writer_count++;
@@ -402,7 +383,7 @@ void* phase1_thread(THREADDATA* ptd)
                         const auto& [L_entry, R_entry, f_output] = current_entries_to_write[i];
 
                         // We only need k instead of k + kExtraBits bits for the last table
-                        Bits new_entry = table_index + 1 == 7 ? std::get<0>(f_output).Slice(0, k)
+                        Bits new_entry = globals.table_index + 1 == 7 ? std::get<0>(f_output).Slice(0, k)
                                                               : std::get<0>(f_output);
 
                         // Maps the new positions. If we hit end of pos, we must write things in
@@ -435,7 +416,7 @@ void* phase1_thread(THREADDATA* ptd)
 
                         if (bStripeStartPair) {
                             uint8_t* right_buf =
-                                right_writer_buf.get() + right_writer_count * right_entry_size_bytes;
+                                right_writer_buf.get() + right_writer_count * globals.unsorted_table->entry_len;
                             new_entry.ToBytes(right_buf);
                             right_writer_count++;
                         }
@@ -481,20 +462,22 @@ void* phase1_thread(THREADDATA* ptd)
 
         // If we needed new bucket, we already waited
         // Do not wait if we are the first thread, since we are guaranteed that everything is written
+        /*
         if (!need_new_bucket && !first_thread) {
             Sem::Wait(ptd->theirs);
-        }
+        }*/
+        uint64_t offsetl = globals.compressed_tables[globals.table_index]->GetInsertionOffset(left_writer_count * globals.compressed_tables[globals.table_index]->entry_len);
 
-        uint32_t const ysize = (table_index + 1 == 7) ? k : k + kExtraBits;
+        uint32_t const ysize = (globals.table_index + 1 == 7) ? k : k + kExtraBits;
         uint32_t const startbyte = ysize / 8;
         uint32_t const endbyte = (ysize + pos_size + 7) / 8 - 1;
         uint64_t const shiftamt = (8 - ((ysize + pos_size) % 8)) % 8;
-        uint64_t const correction = (globals.left_writer_count - stripe_start_correction) << shiftamt;
+        uint64_t const correction = (offsetl - stripe_start_correction) << shiftamt;
 
         // Correct positions
         for (uint32_t i = 0; i < right_writer_count; i++) {
             uint64_t posaccum = 0;
-            uint8_t* entrybuf = right_writer_buf.get() + i * right_entry_size_bytes;
+            uint8_t* entrybuf = right_writer_buf.get() + i * globals.unsorted_table->entry_len;
 
             for (uint32_t j = startbyte; j <= endbyte; j++) {
                 posaccum = (posaccum << 8) | (entrybuf[j]);
@@ -505,40 +488,45 @@ void* phase1_thread(THREADDATA* ptd)
                 posaccum = posaccum >> 8;
             }
         }
-        if (table_index < 6) {
+     //   if (globals.table_index < 6) {
             for (uint64_t i = 0; i < right_writer_count; i++) {
-                globals.R_sort_manager->AddToCache(right_writer_buf.get() + i * right_entry_size_bytes);
+                uint64_t roffset = globals.unsorted_table->GetInsertionOffset(globals.unsorted_table->entry_len);
+                memcpy(globals.unsorted_table->data + roffset, right_writer_buf.get() + i * globals.unsorted_table->entry_len, globals.unsorted_table->entry_len);
             }
-        } else {
+       /* } else {
             // Writes out the right table for table 7
-            (*ptmp_1_disks)[table_index + 1].Write(
+            (*ptmp_1_disks)[globals.table_index + 1].Write(
                 globals.right_writer,
                 right_writer_buf.get(),
                 right_writer_count * right_entry_size_bytes);
-        }
-        globals.right_writer += right_writer_count * right_entry_size_bytes;
+        }*/
+        globals.right_writer += right_writer_count * globals.unsorted_table->entry_len;
         globals.right_writer_count += right_writer_count;
 
-        (*ptmp_1_disks)[table_index].Write(
-            globals.left_writer, left_writer_buf.get(), left_writer_count * compressed_entry_size_bytes);
-        globals.left_writer += left_writer_count * compressed_entry_size_bytes;
+        memcpy(globals.compressed_tables[globals.table_index]->data + offsetl, left_writer_buf.get(), left_writer_count * globals.compressed_tables[globals.table_index]->entry_len);
+
+        globals.left_writer += left_writer_count * globals.compressed_tables[globals.table_index]->entry_len;
         globals.left_writer_count += left_writer_count;
 
         globals.matches += matches;
-        Sem::Post(ptd->mine);
+      //  Sem::Post(ptd->mine);
     }
 
     return 0;
 }
 
-void* F1thread(uint64_t index, uint8_t const k, const uint8_t* id)
+void* F1thread(int const index, const uint8_t* id)
 {
+    uint8_t const k = globals.k;
     uint32_t const entry_size_bytes = 16;
     uint64_t const max_value = ((uint64_t)1 << (k));
     uint64_t const right_buf_entries = 1 << (kBatchSizes);
 
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
+
     F1Calculator f1(k, id);
+
+    std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * entry_size_bytes]);
 
     // Instead of computing f1(1), f1(2), etc, for each x, we compute them in batches
     // to increase CPU efficency.
@@ -546,9 +534,8 @@ void* F1thread(uint64_t index, uint8_t const k, const uint8_t* id)
          lp = lp + globals.num_threads)
     {
         // For each pair x, y in the batch
-        
-        uint8_t * dest = globals.L_sort_manager->data + right_buf_entries * entry_size_bytes * lp;
 
+        uint64_t right_writer_count = 0;
         uint64_t x = lp * (1 << (kBatchSizes));
 
         uint64_t const loopcount = std::min(max_value - x, (uint64_t)1 << (kBatchSizes));
@@ -561,9 +548,9 @@ void* F1thread(uint64_t index, uint8_t const k, const uint8_t* id)
 
             entry = (uint128_t)f1_entries[i] << (128 - kExtraBits - k);
             entry |= (uint128_t)x << (128 - kExtraBits - 2 * k);
-            Util::IntTo16Bytes(dest, entry);
+            Util::IntTo16Bytes(globals.unsorted_table->data + x*entry_size_bytes, entry);
+            right_writer_count++;
             x++;
-            dest += entry_size_bytes;
         }
     }
 
@@ -576,32 +563,54 @@ void* F1thread(uint64_t index, uint8_t const k, const uint8_t* id)
 // proofs of space in it. First, F1 is computed, which is special since it uses
 // ChaCha8, and each encryption provides multiple output values. Then, the rest of the
 // f functions are computed, and a sort on disk happens for each table.
-std::vector<uint64_t> RunPhase1(
-    std::vector<Buffer>& tmp_1_buffs,
+vector<Buffer*> RunPhase1(
     uint8_t const k,
-    const uint8_t* const id,
-    uint64_t const memory_size,
-    uint32_t const num_buckets,
-    uint32_t const log_num_buckets,
+    uint8_t const* id,
     uint32_t const stripe_size,
     uint8_t const num_threads,
     bool const enable_bitfield,
     bool const show_progress)
 {
+  
+    F1Calculator f1(k, id);
+    
     std::cout << "Computing table 1" << std::endl;
     globals.stripe_size = stripe_size;
     globals.num_threads = num_threads;
     Timer f1_start_time;
-    F1Calculator f1(k, id);
     uint64_t x = 0;
 
-    uint32_t const t1_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, 1, true);
-    globals.L_Buffer = tmp_1_buffs[0];
+    globals.k = k;
+    globals.table_index = 0;
+    globals.unsorted_table = new Buffer(16*(1ULL<<k));
+    globals.unsorted_table->entry_len = 16; //EntrySizes::GetMaxEntrySize(k, 1, true);
+    globals.unsorted_table->entry_count = 1ULL<<k;
+    globals.compressed_tables.resize(7);
+    /*
+    globals.L_sort_manager = std::make_unique<SortManager>(
+        memory_size,
+        num_buckets,
+        log_num_buckets,
+        t1_entry_size_bytes,
+        tmp_dirname,
+        filename + ".p1.t1",
+        0,
+        globals.stripe_size);
+        */
+
+    // These are used for sorting on disk. The sort on disk code needs to know how
+    // many elements are in each bucket.
+    /*
+    std::vector<uint64_t> table_sizes = std::vector<uint64_t>(8, 0);
+
+    std::mutex sort_manager_mutex;
+    */
+
     {
         // Start of parallel execution
         std::vector<std::thread> threads;
         for (int i = 0; i < num_threads; i++) {
-            threads.emplace_back(F1thread, i, k, id);
+            threads.emplace_back(F1thread, i, id);
         }
 
         for (auto& t : threads) {
@@ -610,114 +619,144 @@ std::vector<uint64_t> RunPhase1(
         // end of parallel execution
     }
 
-    uint64_t prevtableentries = 1ULL << k;
     f1_start_time.PrintElapsed("F1 complete, time:");
+    /*
+    globals.L_sort_manager->FlushCache();
+    
+    table_sizes[1] = x + 1;
+    * */
 
     // Store positions to previous tables, in k bits.
     uint8_t pos_size = k;
-    uint32_t right_entry_size_bytes = 0;
 
     // For tables 1 through 6, sort the table, calculate matches, and write
     // the next table. This is the left table index.
-    for (uint8_t table_index = 1; table_index < 7; table_index++) {
+    for (uint8_t table_index = 0; table_index < 6; table_index++) {
         Timer table_timer;
-        uint8_t const metadata_size = kVectorLens[table_index + 1] * k;
+        uint8_t const metadata_size = kVectorLens[table_index+2] * k;
+        
+        // Sort the previous table
+        globals.sorted_table = RadixSort::SortToMemory(
+                          globals.unsorted_table,
+                          0, 
+                          globals.num_threads);
 
-        // Determines how many bytes the entries in our left and right tables will take up.
-        uint32_t const entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, true);
-        uint32_t compressed_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
-        right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, true);
+        // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
+        globals.unsorted_table = new Buffer(globals.sorted_table->entry_count*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true));
+        globals.unsorted_table->entry_len = EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true);
+        // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
+        globals.compressed_tables[table_index] = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index+1, false)*globals.sorted_table->entry_count);
+        globals.compressed_tables[table_index]->entry_len = EntrySizes::GetMaxEntrySize(k, table_index+1, false);
+        assert(globals.compressed_tables[table_index]->entry_len > 0);
+        assert(globals.unsorted_table->entry_len > 0);
 
-        if (enable_bitfield && table_index != 1) 
+        if (enable_bitfield && table_index != 0) 
         {
             // We only write pos and offset to tables 2-6 after removing
             // metadata
-            compressed_entry_size_bytes = cdiv(k + kOffsetSize, 8);
-            if (table_index == 6) 
+            globals.compressed_tables[table_index]->entry_len = cdiv(k + kOffsetSize, 8);
+            if (table_index == 5) 
             {
                 // Table 7 will contain f7, pos and offset
-                right_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
+                globals.unsorted_table->entry_len = EntrySizes::GetKeyPosOffsetSize(k);
             }
         }
 
-        std::cout << "Computing table " << int{table_index + 1} << std::endl;
+        std::cout << "Computing table " << int{table_index + 1+1} << std::endl;
         // Start of parallel execution
-        
-        // Sort the table
-        RadixSort.SortToMemory(globals.L_Buffer, entry_size_bytes, prevtableentries);
 
-        FxCalculator f(k, table_index + 1);  // dummy to load static table
+        FxCalculator f(k, table_index + 1 + 1);  // dummy to load static table
 
         globals.matches = 0;
         globals.left_writer_count = 0;
         globals.right_writer_count = 0;
         globals.right_writer = 0;
         globals.left_writer = 0;
+        globals.table_index = table_index;
 
-        globals.R_Buffer = tmp_1_buffs[table_index+1];
+/*
+        globals.R_sort_manager = std::make_unique<SortManager>(
+            memory_size,
+            num_buckets,
+            log_num_buckets,
+            right_entry_size_bytes,
+            tmp_dirname,
+            filename + ".p1.t" + std::to_string(table_index + 1),
+            0,
+            globals.stripe_size);
+            * 
+
+        globals.L_sort_manager->TriggerNewBucket(0);
+        * */
         
+
         Timer computation_pass_timer;
 
         auto td = std::make_unique<THREADDATA[]>(num_threads);
 
         std::vector<std::thread> threads;
 
+
         for (int i = 0; i < num_threads; i++) {
             td[i].index = i;
-            td[i].prevtableentries = prevtableentries;
-            td[i].right_entry_size_bytes = right_entry_size_bytes;
-            td[i].k = k;
-            td[i].table_index = table_index;
-            td[i].metadata_size = metadata_size;
-            td[i].entry_size_bytes = entry_size_bytes;
-            td[i].pos_size = pos_size;
-            td[i].compressed_entry_size_bytes = compressed_entry_size_bytes;
-            td[i].ptmp_1_buffs = &tmp_1_buffs;
 
+            td[i].metadata_size = metadata_size;
+            td[i].pos_size = pos_size;
+            
             threads.emplace_back(phase1_thread, &td[i]);
         }
 
         for (auto& t : threads) {
             t.join();
         }
-
+        
         // end of parallel execution
+        
+        globals.unsorted_table->entry_count = (*globals.unsorted_table->insert_pos)/globals.unsorted_table->entry_len;
+        globals.compressed_tables[table_index]->entry_count = (*globals.compressed_tables[table_index]->insert_pos)/globals.compressed_tables[table_index]->entry_len;
+        assert(globals.compressed_tables[table_index]->entry_len > 0);
+        assert(globals.unsorted_table->entry_len > 0);
+        delete globals.sorted_table;
 
         // Total matches found in the left table
         std::cout << "\tTotal matches: " << globals.matches << std::endl;
 
-        table_sizes[table_index + 1] = globals.R_Buffer.insert_pos;
-
+/*
+        table_sizes[table_index] = globals.left_writer_count;
+        table_sizes[table_index + 1] = globals.right_writer_count;
+*/
         // Truncates the file after the final write position, deleting no longer useful
         // working space
+        /*
         tmp_1_disks[table_index].Truncate(globals.left_writer);
         globals.L_sort_manager.reset();
-        if (table_index < 6)
-        {
-          globals.L_Buffer = globals.R_Buffer;
-          globals.R_Buffer =  tmp_1_buffers[table_index+1];
-        } 
-        else 
-        {
+        if (table_index < 6) {
+            globals.R_sort_manager->FlushCache();
+            globals.L_sort_manager = std::move(globals.R_sort_manager);
+        } else {
             tmp_1_disks[table_index + 1].Truncate(globals.right_writer);
         }
 
+*/
         // Resets variables
+        
         if (globals.matches != globals.right_writer_count) {
             throw InvalidStateException(
                 "Matches do not match with number of write entries " +
                 std::to_string(globals.matches) + " " + std::to_string(globals.right_writer_count));
         }
 
-        prevtableentries = globals.right_writer_count;
+        //prevtableentries = globals.right_writer_count;
         table_timer.PrintElapsed("Forward propagation table time:");
         if (show_progress) {
             progress(1, table_index, 6);
         }
     }
-    table_sizes[0] = 0;
-    globals.R_sort_manager.reset();
-    return table_sizes;
+    globals.compressed_tables[6] = globals.unsorted_table;
+    //table_sizes[0] = 0;
+    //globals.R_sort_manager.reset();
+    
+    return globals.compressed_tables;
 }
 
 #endif  // SRC_CPP_PHASE1_HPP

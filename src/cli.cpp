@@ -70,9 +70,9 @@ int main(int argc, char *argv[]) try {
         .show_positional_help();
 
     // Default values
-    uint8_t k = 20;
+    uint8_t k = 22;
     uint32_t num_buckets = 0;
-    uint32_t num_stripes = 0;
+    uint32_t num_stripes = 65535;
     uint8_t num_threads = 0;
     string filename = "plot.dat";
     string tempdir = ".";
@@ -81,7 +81,7 @@ int main(int argc, char *argv[]) try {
     string operation = "help";
     string memo = "0102030405";
     string id = "022fb42c08c12de3a6af053880199806532e79515f94e83461612101f9412f9e";
-    bool nobitfield = false;
+    bool nobitfield = true;
     bool show_progress = false;
     uint32_t buffmegabytes = 0;
 
@@ -96,7 +96,7 @@ int main(int argc, char *argv[]) try {
         "f, file", "Filename", cxxopts::value<string>(filename))(
         "m, memo", "Memo to insert into the plot", cxxopts::value<string>(memo))(
         "i, id", "Unique 32-byte seed for the plot", cxxopts::value<string>(id))(
-        "e, nobitfield", "Disable bitfield", cxxopts::value<bool>(nobitfield))(
+        //"e, nobitfield", "Disable bitfield", cxxopts::value<bool>(nobitfield))(
         "b, buffer",
         "Megabytes to be used as buffer for sorting and plotting",
         cxxopts::value<uint32_t>(buffmegabytes))(

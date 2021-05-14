@@ -15,7 +15,7 @@
 #ifndef SRC_CPP_BUFFERS_HPP_
 #define SRC_CPP_BUFFERS_HPP_
 
-
+#include <atomic>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -25,11 +25,15 @@ struct Buffer
     uint64_t data_len = 0;
     std::atomic<uint64_t>* insert_pos;
 
+    uint64_t entry_len = 0;
+    uint64_t entry_count = 0;
+
     explicit Buffer(const uint64_t size)
     {
         data_len = size;
         insert_pos = new std::atomic<uint64_t>(0);
-        data = (uint8_t *) mmap(NULL, size, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        data = (uint8_t *) mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+        *data = 4;
         if (data == MAP_FAILED)
         {
             perror("Error mmapping!");
@@ -37,17 +41,18 @@ struct Buffer
         }
     }
     
-    
     uint64_t GetInsertionOffset(uint64_t len)
     {
-      return insert_pos->fetch_add(len);
+      uint64_t offset = insert_pos->fetch_add(len);
+      assert((offset+len) <= data_len);
+      return offset;
     }
 
     ~Buffer()
     {
-      munmap(mapped_data, file_len);
+      munmap(data, data_len);
     }
-}
+};
 
 
 #endif  // SRC_CPP_BUFFERS_HPP_
