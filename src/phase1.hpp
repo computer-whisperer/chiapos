@@ -91,7 +91,7 @@ void* phase1_thread(THREADDATA* ptd)
     std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * globals.unsorted_table->entry_len + 7]);
     std::unique_ptr<uint8_t[]> left_writer_buf(new uint8_t[left_buf_entries * globals.compressed_tables[globals.table_index]->entry_len + 7]);
 
-    FxCalculator f(k, globals.table_index + 1);
+    FxCalculator f(k, globals.table_index + 2);
 
     // Stores map of old positions to new positions (positions after dropping entries from L
     // table that did not match) Map ke
@@ -136,6 +136,8 @@ void* phase1_thread(THREADDATA* ptd)
         bool need_new_bucket = false;
         bool first_thread = ptd->index % globals.num_threads == 0;
         bool last_thread = ptd->index % globals.num_threads == globals.num_threads - 1;
+
+        uint64_t prev_entry_pos_test = 0;
 
         uint64_t L_position_base = 0;
         uint64_t R_position_base = 0;
@@ -324,11 +326,11 @@ void* phase1_thread(THREADDATA* ptd)
 
                             // Rewrite left entry with just pos and offset, to reduce working space
                             uint64_t new_left_entry;
-                            if (globals.table_index == 1)
+                            if (globals.table_index == 0)
                                 new_left_entry = entry->left_metadata;
                             else
                                 new_left_entry = entry->read_posoffset;
-                            new_left_entry <<= 64 - (globals.table_index == 1 ? k : pos_size + kOffsetSize);
+                            new_left_entry <<= 64 - (globals.table_index == 0 ? k : pos_size + kOffsetSize);
                             Util::IntToEightBytes(tmp_buf, new_left_entry);
                         }
                         stripe_left_writer_count++;
@@ -383,7 +385,7 @@ void* phase1_thread(THREADDATA* ptd)
                         const auto& [L_entry, R_entry, f_output] = current_entries_to_write[i];
 
                         // We only need k instead of k + kExtraBits bits for the last table
-                        Bits new_entry = globals.table_index + 1 == 7 ? std::get<0>(f_output).Slice(0, k)
+                        Bits new_entry = (globals.table_index + 2) == 7 ? std::get<0>(f_output).Slice(0, k)
                                                               : std::get<0>(f_output);
 
                         // Maps the new positions. If we hit end of pos, we must write things in
@@ -632,7 +634,7 @@ vector<Buffer*> RunPhase1(
     // For tables 1 through 6, sort the table, calculate matches, and write
     // the next table. This is the left table index.
     for (uint8_t table_index = 0; table_index < 6; table_index++) {
-        Timer table_timer;
+
         uint8_t const metadata_size = kVectorLens[table_index+2] * k;
         
         // Sort the previous table
@@ -642,7 +644,7 @@ vector<Buffer*> RunPhase1(
                           globals.num_threads);
 
         // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
-        globals.unsorted_table = new Buffer(globals.sorted_table->entry_count*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true));
+        globals.unsorted_table = new Buffer(globals.sorted_table->entry_count*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true)*1.2);
         globals.unsorted_table->entry_len = EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true);
         // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
         globals.compressed_tables[table_index] = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index+1, false)*globals.sorted_table->entry_count);
@@ -650,6 +652,7 @@ vector<Buffer*> RunPhase1(
         assert(globals.compressed_tables[table_index]->entry_len > 0);
         assert(globals.unsorted_table->entry_len > 0);
 
+        Timer table_timer;
         if (enable_bitfield && table_index != 0) 
         {
             // We only write pos and offset to tables 2-6 after removing
@@ -752,7 +755,7 @@ vector<Buffer*> RunPhase1(
             progress(1, table_index, 6);
         }
     }
-    globals.compressed_tables[6] = globals.unsorted_table;
+    globals.compressed_tables[6] = RadixSort::SortToMemory(globals.unsorted_table, k, num_threads);
     //table_sizes[0] = 0;
     //globals.R_sort_manager.reset();
     

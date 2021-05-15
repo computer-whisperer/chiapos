@@ -145,14 +145,14 @@ namespace RadixSort {
           entry_ptrs_temp = tmp; 
           
           // confirm that the selected bits have been sorted
-          /*
+
           uint64_t prev_val = 0;
           for (auto & entry_ptr : *entry_ptrs)
           {
             uint64_t new_val = Util::SliceInt64FromBytes(entry_ptr, checking_bit_start, bits_for_stage);
             assert(prev_val <= new_val);
             prev_val = new_val;
-          }*/
+          }
           
           // Advance to next bit set for sorting
           checking_bit_end = checking_bit_start;
@@ -165,15 +165,15 @@ namespace RadixSort {
         }
         
         // confirm that everything has been sorted      
-        /*  
+/*
         for (uint64_t i = 1; i < (*bucket_set_lens)[bucket_set_i]/entry_len; i++)
         {
           assert (lexicographical_compare(
             (*entry_ptrs)[i-1], (*entry_ptrs)[i-1] + entry_len,
             (*entry_ptrs)[i], (*entry_ptrs)[i]+entry_len));
         }
-        * */
-        
+  */
+
         // entry_ptrs should now be sorted, copy to dest
         for (auto & entry_ptr : *entry_ptrs)
         {
@@ -195,13 +195,16 @@ namespace RadixSort {
     	uint64_t num_entries = input_buff->entry_count;
     	uint32_t entry_len = input_buff->entry_len;
 
+    	assert(num_entries*entry_len <= input_buff->data_len);
+
       
       // Get checksum of input data first
       uint64_t csum = 0;
-      for (uint32_t i = 0; i < (entry_len*num_entries); i++)
+      for (uint64_t i = 0; i < (((uint64_t)entry_len)*num_entries); i++)
       {
         csum += input_buff->data[i];
       }
+
 
         // Start of parallel execution
         vector<future<vector<vector<uint8_t>>*>> thread_a_futures;
@@ -272,7 +275,7 @@ namespace RadixSort {
         std::cout << "    Thread stage B took " << std::time(NULL) - prev_time << "seconds." << std::endl;
         prev_time = time(NULL);
      
-     /*
+/*
         for (uint32_t i = 0; i < num_entries-1; i++)
         {
           if (!lexicographical_compare(
@@ -281,20 +284,20 @@ namespace RadixSort {
             {
               std::cout << "Index " << i << " is unsorted!" << endl;
             }
-        }*/
-
+        }
+*/
         std::cout << "    Threaded radix sort took " << std::time(NULL) - start_time << "seconds." << std::endl;
         
         assert(offset_ctr == num_entries*entry_len);
-        /*
+
         uint64_t post_csum = 0;
-        for (uint32_t i = 0; i < (entry_len*num_entries); i++)
+        for (uint64_t i = 0; i < (((uint64_t)entry_len)*num_entries); i++)
         {
           post_csum += output_buff->data[i];
         }
         assert(csum == post_csum);
-        * */
         
+
         for (uint32_t i = 0; i < num_bucket_sets; i++)
         {
           delete bucket_set_lens[i];

@@ -216,6 +216,7 @@ void b17RunPhase2(
                             // This is actually y for table 7
                             entry_sort_key = Util::SliceInt64FromBytes(right_entry_buf, 0, k);
                             entry_pos = Util::SliceInt64FromBytes(right_entry_buf, k, pos_size);
+                            assert(entry_pos >= current_pos);
                             entry_offset = Util::SliceInt64FromBytes(
                                 right_entry_buf, k + pos_size, kOffsetSize);
                         } else {
@@ -226,11 +227,12 @@ void b17RunPhase2(
                                 right_entry_buf, pos_size + kOffsetSize, k);
                         }
                     } else if (cached_entry_pos == current_pos) {
-                        // We have a cached entry at thisuint32_t const num_threads position
+                        // We have a cached entry at this position
                         entry_sort_key = cached_entry_sort_key;
                         entry_pos = cached_entry_pos;
                         entry_offset = cached_entry_offset;
                     } else {
+                    	assert(cached_entry_pos > current_pos);
                         // The cached entry is at a later pos, so we don't read any more R
                         // entries, read more L entries instead.
                         break;
@@ -392,6 +394,7 @@ void b17RunPhase2(
             }
             ++current_pos;
         }
+        phase1_buffers[table_index-2]->entry_len = left_entry_size_bytes;
         phase1_buffers[table_index-2]->entry_count = left_entry_counter;
 
         std::cout << "\tWrote left entries: " << left_entry_counter << std::endl;
@@ -411,8 +414,8 @@ void b17RunPhase2(
 
         // Truncates the right table
         //tmp_1_disks[table_index].Truncate(right_writer);
-    	phase1_buffers[table_index-2]->entry_len = right_entry_size_bytes;
-    	phase1_buffers[table_index-2]->entry_len = right_writer_count;
+    	phase1_buffers[table_index-1]->entry_len = right_entry_size_bytes;
+    	phase1_buffers[table_index-1]->entry_count = right_writer_count;
         if (table_index == 2) {
             // Writes remaining entries for table1
         	memcpy(phase1_buffers[table_index - 2]->data + left_writer,
@@ -436,6 +439,10 @@ void b17RunPhase2(
         if (show_progress) {
             progress(2, 8 - table_index, 6);
         }
+        free(right_reader_buf);
+        free(left_writer_buf);
+        free(right_writer_buf);
+        free(left_reader_buf);
     }
     //L_sort_manager.reset();
 }

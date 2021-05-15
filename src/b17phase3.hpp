@@ -53,8 +53,8 @@ b17Phase3Results b17RunPhase3(
     std::vector<Buffer*> pass2_buffers /*plot_filename*/,
     std::vector<uint64_t> table_sizes,
     const uint8_t *id,
-    const std::string &tmp_dirname,
-    const std::string &filename,
+    //const std::string &tmp_dirname,
+    //const std::string &filename,
     uint32_t header_size,
     uint64_t memory_size,
     uint32_t num_buckets,
@@ -74,8 +74,8 @@ b17Phase3Results b17RunPhase3(
     uint64_t final_entries_written = 0;
     uint32_t right_entry_size_bytes = 0;
 
-    std::unique_ptr<b17SortManager> L_sort_manager;
-    std::unique_ptr<b17SortManager> R_sort_manager;
+    //std::unique_ptr<b17SortManager> L_sort_manager;
+    //std::unique_ptr<b17SortManager> R_sort_manager;
 
     // These variables are used in the WriteParkToFile method. They are preallocatted here
     // to save time.
@@ -118,19 +118,19 @@ b17Phase3Results b17RunPhase3(
         uint64_t right_writer_buf_size = 3 * (memory_size - sort_manager_buf_size) / 4;
         uint64_t right_reader_buf_size =
             memory_size - sort_manager_buf_size - right_writer_buf_size;
-        uint8_t *left_reader_buf = &(memory[0]);
-        uint8_t *right_writer_buf = &(memory[sort_manager_buf_size]);
-        uint8_t *right_reader_buf = &(memory[sort_manager_buf_size + right_writer_buf_size]);
+        uint8_t *left_reader_buf = malloc(sort_manager_buf_size);
+        uint8_t *right_writer_buf = malloc(right_writer_buf_size);
+        uint8_t *right_reader_buf = malloc(right_reader_buf_size);
         uint64_t left_reader_buf_entries = sort_manager_buf_size / left_entry_size_bytes;
         uint64_t right_reader_buf_entries = right_reader_buf_size / right_entry_size_bytes;
         uint64_t left_reader_count = 0;
         uint64_t right_reader_count = 0;
         uint64_t total_r_entries = 0;
 
-        if (table_index > 1) {
-            L_sort_manager->ChangeMemory(memory, sort_manager_buf_size);
-        }
-
+       // if (table_index > 1) {
+       //     L_sort_manager->ChangeMemory(memory, sort_manager_buf_size);
+       // }
+/*
         R_sort_manager = std::make_unique<b17SortManager>(
             right_writer_buf,
             right_writer_buf_size,
@@ -140,7 +140,7 @@ b17Phase3Results b17RunPhase3(
             tmp_dirname,
             filename + ".p3.t" + std::to_string(table_index + 1),
             0,
-            0);
+            0);*/
 
         bool should_read_entry = true;
         std::vector<uint64_t> left_new_pos(kCachedPositionsSize);
