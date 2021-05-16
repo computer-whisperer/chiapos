@@ -120,7 +120,7 @@ void WriteParkToFile(
 Phase3Results RunPhase3(
     uint8_t k,
     FileDisk &tmp2_disk /*filename*/,
-    Phase2Results res2,
+    //Phase2Results res2,
     const uint8_t *id,
     const std::string &tmp_dirname,
     const std::string &filename,

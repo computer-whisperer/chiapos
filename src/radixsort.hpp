@@ -186,6 +186,21 @@ namespace RadixSort {
     	}
     }
 
+    unsigned long hash_with_len(unsigned char *str, size_t len)
+    {
+        unsigned long hash = 5381;
+        int c;
+        int i;
+
+        for (i = 0; i < len; i++)
+        {
+        	c = *str++;
+            hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+        }
+
+        return hash;
+    }
+
     Buffer* SortToMemory(
         Buffer * input_buff,
         uint32_t const bits_begin,
@@ -200,9 +215,9 @@ namespace RadixSort {
       
       // Get checksum of input data first
       uint64_t csum = 0;
-      for (uint64_t i = 0; i < (((uint64_t)entry_len)*num_entries); i++)
+      for (uint64_t i = 0; i < num_entries; i++)
       {
-        csum += input_buff->data[i];
+        csum += hash_with_len(input_buff->data + i*input_buff->entry_len, input_buff->entry_len);
       }
 
 
@@ -291,9 +306,9 @@ namespace RadixSort {
         assert(offset_ctr == num_entries*entry_len);
 
         uint64_t post_csum = 0;
-        for (uint64_t i = 0; i < (((uint64_t)entry_len)*num_entries); i++)
+        for (uint64_t i = 0; i < num_entries; i++)
         {
-          post_csum += output_buff->data[i];
+        	post_csum += hash_with_len(output_buff->data + i*output_buff->entry_len, output_buff->entry_len);
         }
         assert(csum == post_csum);
         

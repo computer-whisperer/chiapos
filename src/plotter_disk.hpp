@@ -41,12 +41,13 @@
 //#include "phase2.hpp"
 #include "b17phase2.hpp"
 //#include "phase3.hpp"
-//#include "b17phase3.hpp"
+#include "b17phase3.hpp"
 //#include "phase4.hpp"
 //#include "b17phase4.hpp"
 #include "pos_constants.hpp"
 #include "sort_manager.hpp"
 #include "util.hpp"
+#include "disk.hpp"
 
 #define B17PHASE23
 
@@ -201,7 +202,11 @@ public:
         std::ostream* prevstr = std::cin.tie(NULL);
 
 
+
+
 		// Scope for FileDisk
+
+        FileDisk tmp2_disk(tmp_2_filename);
 
 		assert(id_len == kIdLen);
 
@@ -231,7 +236,7 @@ public:
 			  << Timer::GetNow();
 
 		Timer p2;
-		b17RunPhase2(
+		vector<Buffer*> phase2_tables = b17RunPhase2(
 			phase1_tables,
 			k,
 			id,
@@ -239,7 +244,7 @@ public:
 			show_progress,
 			num_threads);
 		p2.PrintElapsed("Time for phase 2 =");
-/*
+
 		// Now we open a new file, where the final contents of the plot will be stored.
 		uint32_t header_size = WriteHeader(tmp2_disk, k, id, memo, memo_len);
 
@@ -248,21 +253,23 @@ public:
 			  << " ... " << Timer::GetNow();
 		Timer p3;
 		b17Phase3Results res = b17RunPhase3(
-			memory.get(),
+			//memory.get(),
 			k,
 			tmp2_disk,
-			tmp_1_disks,
-			backprop_table_sizes,
+			phase2_tables,
+			//tmp_1_disks,
+			//backprop_table_sizes,
 			id,
-			tmp_dirname,
-			filename,
+			//tmp_dirname,
+			//filename,
 			header_size,
 			memory_size,
-			num_buckets,
-			log_num_buckets,
-			show_progress);
+			//num_buckets,
+			//log_num_buckets,
+			show_progress,
+			num_threads);
 		p3.PrintElapsed("Time for phase 3 =");
-
+/*
 		std::cout << std::endl
 			  << "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
 			  << " ... " << Timer::GetNow();

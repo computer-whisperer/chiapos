@@ -15,11 +15,14 @@
 #ifndef SRC_CPP_B17PHASE3_HPP_
 #define SRC_CPP_B17PHASE3_HPP_
 
+#include "disk.hpp"
+#include "radixsort.hpp"
+#include "buffers.hpp"
 #include "encoding.hpp"
 #include "entry_sizes.hpp"
 #include "exceptions.hpp"
 #include "pos_constants.hpp"
-#include "b17sort_manager.hpp"
+//#include "phase3.hpp"
 
 // Results of phase 3. These are passed into Phase 4, so the checkpoint tables
 // can be properly built.
@@ -31,8 +34,78 @@ struct b17Phase3Results {
     uint32_t right_entry_size_bits;
 
     uint32_t header_size;
-    std::unique_ptr<b17SortManager> table7_sm;
+  //  std::unique_ptr<b17SortManager> table7_sm;
 };
+
+// This writes a number of entries into a file, in the final, optimized format. The park
+// contains a checkpoint value (which is a 2k bits line point), as well as EPP (entries per
+// park) entries. These entries are each divided into stub and delta section. The stub bits are
+// encoded as is, but the delta bits are optimized into a variable encoding scheme. Since we
+// have many entries in each park, we can approximate how much space each park with take. Format
+// is: [2k bits of first_line_point]  [EPP-1 stubs] [Deltas size] [EPP-1 deltas]....
+// [first_line_point] ...
+void WriteParkToFile(
+    FileDisk &final_disk,
+    uint64_t table_start,
+    uint64_t park_index,
+    uint32_t park_size_bytes,
+    uint128_t first_line_point,
+    const std::vector<uint8_t> &park_deltas,
+    const std::vector<uint64_t> &park_stubs,
+    uint8_t k,
+    uint8_t table_index,
+    uint8_t *park_buffer,
+    uint64_t const park_buffer_size)
+{
+    // Parks are fixed size, so we know where to start writing. The deltas will not go over
+    // into the next park.
+    uint64_t writer = table_start + park_index * park_size_bytes;
+    uint8_t *index = park_buffer;
+
+    first_line_point <<= 128 - 2 * k;
+    Util::IntTo16Bytes(index, first_line_point);
+    index += EntrySizes::CalculateLinePointSize(k);
+
+    // We use ParkBits instead of Bits since it allows storing more data
+    ParkBits park_stubs_bits;
+    for (uint64_t stub : park_stubs) {
+        park_stubs_bits.AppendValue(stub, (k - kStubMinusBits));
+    }
+    uint32_t stubs_size = EntrySizes::CalculateStubsSize(k);
+    uint32_t stubs_valid_size = cdiv(park_stubs_bits.GetSize(), 8);
+    park_stubs_bits.ToBytes(index);
+    memset(index + stubs_valid_size, 0, stubs_size - stubs_valid_size);
+    index += stubs_size;
+
+    // The stubs are random so they don't need encoding. But deltas are more likely to
+    // be small, so we can compress them
+    double R = kRValues[table_index - 1];
+    uint8_t *deltas_start = index + 2;
+    size_t deltas_size = Encoding::ANSEncodeDeltas(park_deltas, R, deltas_start);
+
+    if (!deltas_size) {
+        // Uncompressed
+        deltas_size = park_deltas.size();
+        Util::IntToTwoBytesLE(index, deltas_size | 0x8000);
+        memcpy(deltas_start, park_deltas.data(), deltas_size);
+    } else {
+        // Compressed
+        Util::IntToTwoBytesLE(index, deltas_size);
+    }
+
+    index += 2 + deltas_size;
+
+    if ((uint32_t)(index - park_buffer) > park_buffer_size) {
+        std::cout << "index-park_buffer " << index - park_buffer << " park_buffer_size "
+                  << park_buffer_size << std::endl;
+        throw InvalidStateException(
+            "Overflowed park buffer, writing " + std::to_string(index - park_buffer) +
+            " bytes. Space: " + std::to_string(park_buffer_size));
+    }
+    memset(index, 0x00, park_size_bytes - (index - park_buffer));
+
+    final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
+}
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
@@ -50,16 +123,17 @@ b17Phase3Results b17RunPhase3(
     //uint8_t *memory,
     uint8_t k,
     FileDisk &tmp2_disk /*filename*/,
-    std::vector<Buffer*> pass2_buffers /*plot_filename*/,
-    std::vector<uint64_t> table_sizes,
+    std::vector<Buffer*> phase2_buffers /*plot_filename*/,
+    //std::vector<uint64_t> table_sizes,
     const uint8_t *id,
     //const std::string &tmp_dirname,
     //const std::string &filename,
     uint32_t header_size,
     uint64_t memory_size,
-    uint32_t num_buckets,
-    uint32_t log_num_buckets,
-    const bool show_progress)
+    //uint32_t num_buckets,
+    //uint32_t log_num_buckets,
+    const bool show_progress,
+	const uint32_t thread_num)
 {
     uint8_t pos_size = k;
     uint8_t line_point_size = 2 * k - 1;
@@ -83,6 +157,7 @@ b17Phase3Results b17RunPhase3(
                                 EntrySizes::CalculateStubsSize(k) + 2 +
                                 EntrySizes::CalculateMaxDeltasSize(k, 1);
     uint8_t *park_buffer = new uint8_t[park_buffer_size];
+
 
     // Iterates through all tables, starting at 1, with L and R pointers.
     // For each table, R entries are rewritten with line points. Then, the right table is
@@ -118,14 +193,15 @@ b17Phase3Results b17RunPhase3(
         uint64_t right_writer_buf_size = 3 * (memory_size - sort_manager_buf_size) / 4;
         uint64_t right_reader_buf_size =
             memory_size - sort_manager_buf_size - right_writer_buf_size;
-        uint8_t *left_reader_buf = malloc(sort_manager_buf_size);
-        uint8_t *right_writer_buf = malloc(right_writer_buf_size);
-        uint8_t *right_reader_buf = malloc(right_reader_buf_size);
+        uint8_t *left_reader_buf = (uint8_t*)malloc(sort_manager_buf_size);
+        uint8_t *right_writer_buf = (uint8_t*)malloc(right_writer_buf_size);
+        uint8_t *right_reader_buf = (uint8_t*)malloc(right_reader_buf_size);
         uint64_t left_reader_buf_entries = sort_manager_buf_size / left_entry_size_bytes;
         uint64_t right_reader_buf_entries = right_reader_buf_size / right_entry_size_bytes;
         uint64_t left_reader_count = 0;
         uint64_t right_reader_count = 0;
         uint64_t total_r_entries = 0;
+
 
        // if (table_index > 1) {
        //     L_sort_manager->ChangeMemory(memory, sort_manager_buf_size);
@@ -141,6 +217,8 @@ b17Phase3Results b17RunPhase3(
             filename + ".p3.t" + std::to_string(table_index + 1),
             0,
             0);*/
+
+        phase2_buffers[table_index]->insert_pos->store(0);
 
         bool should_read_entry = true;
         std::vector<uint64_t> left_new_pos(kCachedPositionsSize);
@@ -172,7 +250,7 @@ b17Phase3Results b17RunPhase3(
             if (end_of_right_table || current_pos <= greatest_pos) {
                 while (!end_of_right_table) {
                     if (should_read_entry) {
-                        if (right_reader_count == table_sizes[table_index + 1]) {
+                        if (right_reader_count == phase2_buffers[table_index]->entry_count) {
                             end_of_right_table = true;
                             end_of_table_pos = current_pos;
                             break;
@@ -182,11 +260,12 @@ b17Phase3Results b17RunPhase3(
                         if (right_reader_count % right_reader_buf_entries == 0) {
                             uint64_t readAmt = std::min(
                                 right_reader_buf_entries * right_entry_size_bytes,
-                                (table_sizes[table_index + 1] - right_reader_count) *
+                                (phase2_buffers[table_index]->entry_count - right_reader_count) *
                                     right_entry_size_bytes);
 
-                            tmp_1_disks[table_index + 1].Read(
-                                right_reader, right_reader_buf, readAmt);
+                            memcpy(right_reader_buf, phase2_buffers[table_index]->data+right_reader, readAmt);
+                           // tmp_1_disks[table_index + 1].Read(
+                           //     right_reader, right_reader_buf, readAmt);
                             right_reader += readAmt;
                         }
                         right_entry_buf =
@@ -205,6 +284,7 @@ b17Phase3Results b17RunPhase3(
                         entry_pos = cached_entry_pos;
                         entry_offset = cached_entry_offset;
                     } else {
+                    	assert(cached_entry_pos > current_pos);
                         break;
                     }
 
@@ -227,24 +307,24 @@ b17Phase3Results b17RunPhase3(
                         break;
                     }
                 }
-                if (left_reader_count < table_sizes[table_index]) {
+                if (left_reader_count < phase2_buffers[table_index]->entry_count) {
                     // The left entries are in the new format: (sort_key, new_pos), except for table
                     // 1: (y, x).
                     if (table_index == 1) {
                         if (left_reader_count % left_reader_buf_entries == 0) {
                             uint64_t readAmt = std::min(
                                 left_reader_buf_entries * left_entry_size_bytes,
-                                (table_sizes[table_index] - left_reader_count) *
+                                (phase2_buffers[table_index]->entry_count - left_reader_count) *
                                     left_entry_size_bytes);
-
-                            tmp_1_disks[table_index].Read(left_reader, left_reader_buf, readAmt);
+                            memcpy(left_reader_buf, phase2_buffers[table_index-1]->data+left_reader, readAmt);
+                            //tmp_1_disks[table_index].Read(left_reader, left_reader_buf, readAmt);
                             left_reader += readAmt;
                         }
                         left_entry_disk_buf =
                             left_reader_buf +
                             (left_reader_count % left_reader_buf_entries) * left_entry_size_bytes;
                     } else {
-                        left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader, 1);
+                        left_entry_disk_buf = phase2_buffers[table_index-1]->data+left_reader;
                         left_reader += left_entry_size_bytes;
                     }
                     left_reader_count++;
@@ -294,8 +374,8 @@ b17Phase3Results b17RunPhase3(
                     to_write += Bits(
                         old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
                         right_sort_key_size);
-
-                    R_sort_manager->AddToCache(to_write);
+                    to_write.ToBytes(phase2_buffers[table_index]->data + phase2_buffers[table_index]->GetInsertionOffset(to_write.GetSize()/8));
+                    //R_sort_manager->AddToCache(to_write);
                     total_r_entries++;
                 }
             }
@@ -304,12 +384,17 @@ b17Phase3Results b17RunPhase3(
         computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
 
         // Remove no longer needed file
-        tmp_1_disks[table_index].Truncate(0);
+        //tmp_1_disks[table_index].Truncate(0);
 
         // Flush cache so all entries are written to buckets
-        R_sort_manager->FlushCache();
+        //R_sort_manager->FlushCache();
+
 
         delete[] left_entry_buf_sm;
+
+        free(left_reader_buf);
+        free(right_writer_buf);
+        free(right_reader_buf);
 
         Timer computation_pass_2_timer;
 
@@ -319,22 +404,22 @@ b17Phase3Results b17RunPhase3(
         right_reader = 0;
         right_reader_buf_size = floor(kMemSortProportionLinePoint * memory_size);
         right_writer_buf_size = memory_size - right_reader_buf_size;
-        right_reader_buf = &(memory[0]);
-        right_writer_buf = &(memory[right_reader_buf_size]);
+        right_reader_buf = (uint8_t*)malloc(right_reader_buf_size);
+        right_writer_buf = (uint8_t*)malloc(right_writer_buf_size);
         right_reader_count = 0;
         uint64_t final_table_writer = final_table_begin_pointers[table_index];
 
         final_entries_written = 0;
 
-        if (table_index > 1) {
+      /*  if (table_index > 1) {
             // Make sure all files are removed
             L_sort_manager.reset();
-        }
+        }*/
 
         // L sort manager will be used for the writer, and R sort manager will be used for the
         // reader
-        R_sort_manager->ChangeMemory(right_reader_buf, right_reader_buf_size);
-        L_sort_manager = std::make_unique<b17SortManager>(
+        //R_sort_manager->ChangeMemory(right_reader_buf, right_reader_buf_size);
+        /*L_sort_manager = std::make_unique<b17SortManager>(
             right_writer_buf,
             right_writer_buf_size,
             num_buckets,
@@ -343,7 +428,10 @@ b17Phase3Results b17RunPhase3(
             tmp_dirname,
             filename + ".p3s.t" + std::to_string(table_index + 1),
             0,
-            0);
+            0);*/
+        phase2_buffers[table_index]->entry_len = right_entry_size_bytes;
+        phase2_buffers[table_index] = RadixSort::SortToMemory(phase2_buffers[table_index], 0, thread_num);
+        phase2_buffers[table_index]->insert_pos->store(0);
 
         std::vector<uint8_t> park_deltas;
         std::vector<uint64_t> park_stubs;
@@ -360,7 +448,8 @@ b17Phase3Results b17RunPhase3(
         int added_to_cache = 0;
         uint8_t index_size = table_index == 6 ? k + 1 : k;
         for (uint64_t index = 0; index < total_r_entries; index++) {
-            right_reader_entry_buf = R_sort_manager->ReadEntry(right_reader, 2);
+        	right_reader_entry_buf = phase2_buffers[table_index]->data + right_reader;
+            //right_reader_entry_buf = R_sort_manager->ReadEntry(right_reader, 2);
             right_reader += right_entry_size_bytes;
             right_reader_count++;
 
@@ -373,7 +462,8 @@ b17Phase3Results b17RunPhase3(
             Bits to_write = Bits(sort_key, right_sort_key_size);
             to_write += Bits(index, index_size);
 
-            L_sort_manager->AddToCache(to_write);
+            to_write.ToBytes(phase2_buffers[table_index]->data + phase2_buffers[table_index]->GetInsertionOffset(to_write.GetSize()/8));
+            //L_sort_manager->AddToCache(to_write);
             added_to_cache++;
 
             // Every EPP entries, writes a park
@@ -419,8 +509,11 @@ b17Phase3Results b17RunPhase3(
             }
             last_line_point = line_point;
         }
-        R_sort_manager.reset();
-        L_sort_manager->FlushCache();
+       // R_sort_manager.reset();
+       // L_sort_manager->FlushCache();
+
+        phase2_buffers[table_index]->entry_len = right_entry_size_bytes;
+        phase2_buffers[table_index] = RadixSort::SortToMemory(phase2_buffers[table_index], 0, thread_num);
 
         computation_pass_2_timer.PrintElapsed("\tSecond computation pass time:");
 
@@ -456,7 +549,7 @@ b17Phase3Results b17RunPhase3(
         if (show_progress) { progress(3, table_index, 6); }
     }
 
-    L_sort_manager->ChangeMemory(memory, memory_size);
+    //L_sort_manager->ChangeMemory(memory, memory_size);
     delete[] park_buffer;
 
     // These results will be used to write table P7 and the checkpoint tables in phase 4.
@@ -464,8 +557,7 @@ b17Phase3Results b17RunPhase3(
         final_table_begin_pointers,
         final_entries_written,
         right_entry_size_bytes * 8,
-        header_size,
-        std::move(L_sort_manager)};
+        header_size};
 }
 
 #endif  // SRC_CPP_PHASE3_HPP

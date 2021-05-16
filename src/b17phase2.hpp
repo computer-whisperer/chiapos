@@ -15,7 +15,7 @@
 #ifndef SRC_CPP_B17PHASE2_HPP_
 #define SRC_CPP_B17PHASE2_HPP_
 
-#include "disk.hpp"
+#include "buffers.hpp"
 #include "entry_sizes.hpp"
 #include "radixsort.hpp"
 
@@ -23,7 +23,7 @@
 // The purpose of backpropagate is to eliminate any dead entries that don't contribute
 // to final values in f7, to minimize disk usage. A sort on disk is applied to each table,
 // so that they are sorted by position.
-void b17RunPhase2(
+std::vector<Buffer*> b17RunPhase2(
     std::vector<Buffer*> phase1_buffers,
     //uint8_t *memory,
     //std::vector<FileDisk> &tmp_1_disks,
@@ -445,6 +445,7 @@ void b17RunPhase2(
         free(left_reader_buf);
     }
     //L_sort_manager.reset();
+    return phase1_buffers;
 }
 
 #endif  // SRC_CPP_PHASE2_HPP

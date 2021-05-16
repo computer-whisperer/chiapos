@@ -133,11 +133,7 @@ void* phase1_thread(THREADDATA* ptd)
 
         bool bStripePregamePair = false;
         bool bStripeStartPair = false;
-        bool need_new_bucket = false;
-        bool first_thread = ptd->index % globals.num_threads == 0;
-        bool last_thread = ptd->index % globals.num_threads == globals.num_threads - 1;
 
-        uint64_t prev_entry_pos_test = 0;
 
         uint64_t L_position_base = 0;
         uint64_t R_position_base = 0;
@@ -329,7 +325,14 @@ void* phase1_thread(THREADDATA* ptd)
                             if (globals.table_index == 0)
                                 new_left_entry = entry->left_metadata;
                             else
+                            {
                                 new_left_entry = entry->read_posoffset;
+                                uint64_t pos = (new_left_entry>>kOffsetSize)%(1ULL << pos_size);
+                                uint64_t offset = new_left_entry%(1ULL << kOffsetSize);
+                                assert(pos + offset < globals.compressed_tables[globals.table_index-1]->entry_count);
+                                assert(offset > 0);
+                            }
+
                             new_left_entry <<= 64 - (globals.table_index == 0 ? k : pos_size + kOffsetSize);
                             Util::IntToEightBytes(tmp_buf, new_left_entry);
                         }
@@ -408,7 +411,10 @@ void* phase1_thread(THREADDATA* ptd)
                                 "Offset too large: " + std::to_string(newrpos - newlpos));
                         }
 
-                        new_entry.AppendValue(newrpos - newlpos, kOffsetSize);
+                        int64_t offset = newrpos - newlpos;
+                        assert (offset > 0);
+
+                        new_entry.AppendValue(offset, kOffsetSize);
                         // New metadata which will be used to compute the next f
                         new_entry += std::get<1>(f_output);
 
@@ -470,11 +476,11 @@ void* phase1_thread(THREADDATA* ptd)
         }*/
         uint64_t offsetl = globals.compressed_tables[globals.table_index]->GetInsertionOffset(left_writer_count * globals.compressed_tables[globals.table_index]->entry_len);
 
-        uint32_t const ysize = (globals.table_index + 1 == 7) ? k : k + kExtraBits;
+        uint32_t const ysize = (globals.table_index + 2 == 7) ? k : k + kExtraBits;
         uint32_t const startbyte = ysize / 8;
         uint32_t const endbyte = (ysize + pos_size + 7) / 8 - 1;
         uint64_t const shiftamt = (8 - ((ysize + pos_size) % 8)) % 8;
-        uint64_t const correction = (offsetl - stripe_start_correction) << shiftamt;
+        uint64_t const correction = (offsetl/globals.compressed_tables[globals.table_index]->entry_len - stripe_start_correction) << shiftamt;
 
         // Correct positions
         for (uint32_t i = 0; i < right_writer_count; i++) {
@@ -557,6 +563,20 @@ void* F1thread(int const index, const uint8_t* id)
     }
 
     return 0;
+}
+
+void assert_matching(uint64_t lout, uint64_t rout)
+{
+
+    uint64_t bucket_id_lout = lout/kBC;
+    uint64_t bucket_id_rout = rout/kBC;
+    assert(bucket_id_lout + 1 == bucket_id_rout);
+    uint64_t b_id_l = (lout%kBC)/kC;
+    uint64_t c_id_l = (lout%kBC)%kC;
+    uint64_t b_id_r = (rout%kBC)/kC;
+    uint64_t c_id_r = (rout%kBC)%kC;
+    uint64_t m = (b_id_r - b_id_l)%kB;
+    assert(c_id_r - c_id_l == (2*m + (bucket_id_lout%2))*(2*m + (bucket_id_lout%2)));
 }
 
 // This is Phase 1, or forward propagation. During this phase, all of the 7 tables,
@@ -643,6 +663,9 @@ vector<Buffer*> RunPhase1(
                           0, 
                           globals.num_threads);
 
+
+
+
         // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
         globals.unsorted_table = new Buffer(globals.sorted_table->entry_count*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true)*1.2);
         globals.unsorted_table->entry_len = EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true);
@@ -699,7 +722,7 @@ vector<Buffer*> RunPhase1(
 
         std::vector<std::thread> threads;
 
-
+        F1Calculator f1(k, id);
         for (int i = 0; i < num_threads; i++) {
             td[i].index = i;
 
@@ -714,12 +737,16 @@ vector<Buffer*> RunPhase1(
         }
         
         // end of parallel execution
-        
+
         globals.unsorted_table->entry_count = (*globals.unsorted_table->insert_pos)/globals.unsorted_table->entry_len;
         globals.compressed_tables[table_index]->entry_count = (*globals.compressed_tables[table_index]->insert_pos)/globals.compressed_tables[table_index]->entry_len;
         assert(globals.compressed_tables[table_index]->entry_len > 0);
         assert(globals.unsorted_table->entry_len > 0);
         delete globals.sorted_table;
+
+
+        // Test for zero offsets
+
 
         // Total matches found in the left table
         std::cout << "\tTotal matches: " << globals.matches << std::endl;
@@ -755,10 +782,106 @@ vector<Buffer*> RunPhase1(
             progress(1, table_index, 6);
         }
     }
-    globals.compressed_tables[6] = RadixSort::SortToMemory(globals.unsorted_table, k, num_threads);
     //table_sizes[0] = 0;
     //globals.R_sort_manager.reset();
     
+
+    //globals.compressed_tables[6] = RadixSort::SortToMemory(globals.unsorted_table, k, num_threads);
+    globals.compressed_tables[6] = globals.unsorted_table;
+
+    // Test that we can draw good proofs from this
+    uint64_t challenge = 0x28b40d;
+    challenge = challenge%(1ULL<<k);
+    uint64_t i;
+    cout << "Looking for : " << challenge << endl;
+    for (i = 0; i < globals.compressed_tables[6]->entry_count; i++)
+    {
+    	uint64_t value = (*(uint64_t*)(globals.compressed_tables[6]->data+i*globals.compressed_tables[6]->entry_len));
+    	value = value%(1ULL<<k);
+
+    	if (value == challenge)
+    	{
+    		break;
+    	}
+    }
+    if (i < globals.compressed_tables[6]->entry_count)
+    {
+    	cout << "Got inputs: ";
+    	vector<uint64_t> x(64);
+    	for (uint32_t j = 0; j < 64; j++)
+    	{
+    		uint64_t next_pos = i;
+    		uint32_t l;
+    		for (l = 6; l > 0; l--)
+    		{
+
+    			uint8_t * entry = globals.compressed_tables[l]->data + globals.compressed_tables[l]->entry_len*next_pos;
+    			uint32_t pos_offset = (l==6) ? k : 0;
+    			uint32_t poslen = k;
+    			uint64_t pos = Util::SliceInt64FromBytes(entry, pos_offset, poslen);
+    			uint64_t offset = Util::SliceInt64FromBytes(entry, pos_offset+poslen, kOffsetSize);
+    			assert(offset > 0);
+    			uint8_t mask = 1ULL<<(l-1);
+    			if (j & mask)
+    			{
+    				next_pos = pos + offset;
+    			}
+    			else
+    			{
+    				next_pos = pos;
+    			}
+    			assert(next_pos < globals.compressed_tables[l]->entry_count);
+    		}
+    		uint8_t * entry = globals.compressed_tables[l]->data + globals.compressed_tables[l]->entry_len*next_pos;
+    		x[j] = Util::SliceInt64FromBytes(entry, k, k);
+    		cout << x[j];
+    		if (j < 63)
+    		{
+    			cout << ", ";
+    		}
+    	}
+    	cout << endl;
+    	// Check for matching conditions and re-combine
+		vector<Bits> input_collations;
+		vector<Bits> input_fs;
+		for (uint32_t fi = 1; fi <= 7; fi++)
+		{
+			vector<Bits> output_fs;
+			vector<Bits> output_collations;
+			if (fi == 1)
+			{
+				F1Calculator f1(k, id);
+        		for (uint32_t i = 0; i < x.size(); i++)
+        		{
+        			Bits b = Bits(x[i], k);
+        			output_collations.push_back(b);
+        			output_fs.push_back(f1.CalculateF(b));
+        		}
+			}
+			else
+			{
+				FxCalculator fx(k, fi);
+        		for (uint32_t i = 0; i < input_collations.size(); i += 2)
+        		{
+        			//assert_matching(input_fs[i].GetValue(), input_fs[i+1].GetValue());
+        			auto out = fx.CalculateBucket(input_fs[i], input_collations[i], input_collations[i+1]);
+        			output_fs.push_back(out.first);
+        			output_collations.push_back(out.second);
+        		}
+			}
+			input_collations = output_collations;
+			input_fs = output_fs;
+		}
+		cout << "Result of tree: f7(...) = " << input_fs[0] << endl;
+
+    }
+    else
+    {
+    	cout << "Could not find " << challenge << " in table 7." << endl;
+    }
+
+
+
     return globals.compressed_tables;
 }
 
