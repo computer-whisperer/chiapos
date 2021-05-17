@@ -762,7 +762,7 @@ vector<Buffer*> RunPhase1(
     			uint64_t rx = Util::SliceInt64FromBytes(rentry, 0, k);
     			Bits fl = f1.CalculateF(Bits(lx, k));
     			Bits fr = f1.CalculateF(Bits(rx, k));
-    			assert_matching(fl.GetValue(), fr.GetValue());
+    			//assert_matching(fl.GetValue(), fr.GetValue());
             }
 
         }
@@ -892,7 +892,7 @@ vector<Buffer*> RunPhase1(
 			input_collations = output_collations;
 			input_fs = output_fs;
 		}
-		cout << "Result of tree: f7(...) = " << input_fs[0].GetValue() << endl;
+		cout << "Result of tree: f7(...) = " << input_fs[0].GetValue()%(1ULL<<k) << endl;
 
     }
     else

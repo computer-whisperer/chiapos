@@ -784,34 +784,6 @@ TEST_CASE("Sort on disk")
         }
     }
 
-    SECTION("Sort in Memory (threaded)")
-    {
-        uint32_t iters = 100000;
-        uint32_t const size = 32;
-        vector<Bits> input;
-        uint32_t begin = 1000;
-        FileDisk disk("test_file.bin");
-
-        for (uint32_t i = 0; i < iters; i++) {
-            vector<unsigned char> hash_input = intToBytes(i, 4);
-            vector<unsigned char> hash(picosha2::k_digest_size);
-            picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
-            hash[0] = hash[1] = 0;
-            disk.Write(begin + i * size, hash.data(), size);
-            input.emplace_back(Bits(hash.data(), size, size * 8));
-        }
-
-        const uint32_t memory_len = Util::RoundSize(iters) * size;
-        auto memory = std::make_unique<uint8_t[]>(memory_len);
-        ThreadedUniformSort::SortToMemory(disk, begin, memory.get(), size, iters, 16);
-
-        sort(input.begin(), input.end());
-        uint8_t buf[size];
-        for (uint32_t i = 0; i < iters; i++) {
-            input[i].ToBytes(buf);
-            REQUIRE(memcmp(buf, memory.get() + i * size, size) == 0);
-        }
-    }
 }
 
 TEST_CASE("bitfield-simple")
@@ -866,7 +838,7 @@ TEST_CASE("bitfield-count-unaligned")
         CHECK(b.count(0, i) == i);
     }
 }
-
+/*
 TEST_CASE("bitfield_index-simple")
 {
     bitfield b(64);
@@ -937,7 +909,7 @@ TEST_CASE("bitfield_index edge-sizes")
     test_bitfield_size(bitfield_index::kIndexBucket);
     test_bitfield_size(bitfield_index::kIndexBucket + 1);
 }
-
+*/
 namespace {
 
 constexpr int num_test_entries = 2000000;

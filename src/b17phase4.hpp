@@ -15,6 +15,8 @@
 #ifndef SRC_CPP_B17PHASE4_HPP_
 #define SRC_CPP_B17PHASE4_HPP_
 
+#include <mcheck.h>
+
 #include "disk.hpp"
 #include "encoding.hpp"
 #include "entry_sizes.hpp"
@@ -72,9 +74,12 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
     uint32_t right_entry_size_bytes = res.right_entry_size_bits / 8;
 
     uint8_t *right_entry_buf;
-    uint8_t* C1_entry_buf = (uint8_t*)malloc(Util::ByteAlign(k) / 8);
+    uint8_t C1_entry_buf[16];
     uint8_t* C3_entry_buf = (uint8_t*)malloc(size_C3);
     uint8_t* P7_entry_buf = (uint8_t*)malloc(P7_park_size);
+    assert(C1_entry_buf);
+    assert(C3_entry_buf);
+    assert(P7_entry_buf);
 
     std::cout << "\tStarting to write C1 and C3 tables" << std::endl;
 
@@ -103,8 +108,11 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
 
         to_write_p7 += ParkBits(entry_new_pos, k + 1);
 
+        mprobe(C3_entry_buf);
+        mprobe(P7_entry_buf);
+
         if (f7_position % kCheckpoint1Interval == 0) {
-        	assert(entry_y_bits.GetSize() < Util::ByteAlign(k));
+        	assert(entry_y_bits.GetSize() <= Util::ByteAlign(k));
             entry_y_bits.ToBytes(C1_entry_buf);
             tmp2_disk.Write(final_file_writer_1, (C1_entry_buf), Util::ByteAlign(k) / 8);
             final_file_writer_1 += Util::ByteAlign(k) / 8;
@@ -143,6 +151,9 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
     Encoding::ANSFree(kC3R);
     //res.table7_sm.reset();
 
+   // mprobe(C3_entry_buf);
+   // mprobe(P7_entry_buf);
+
     // Writes the final park to disk
     assert(to_write_p7.GetSize()/8 < P7_park_size);
     memset(P7_entry_buf, 0, P7_park_size);
@@ -153,6 +164,7 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
 
     if (!deltas_to_write.empty()) {
         size_t num_bytes = Encoding::ANSEncodeDeltas(deltas_to_write, kC3R, C3_entry_buf + 2);
+        assert((num_bytes + 2) <= size_C3);
         memset(C3_entry_buf + num_bytes + 2, 0, size_C3 - (num_bytes + 2));
         final_file_writer_2 = begin_byte_C3 + (num_C1_entries - 1) * size_C3;
 
@@ -180,9 +192,8 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
     final_file_writer_1 += Util::ByteAlign(k) / 8;
     std::cout << "\tFinished writing C2 table" << std::endl;
 
-    free(C1_entry_buf);
-    free(C3_entry_buf);
-    free(P7_entry_buf);
+   // free(C3_entry_buf);
+   // free(P7_entry_buf);
 
 
     final_file_writer_1 = res.header_size - 8 * 3;

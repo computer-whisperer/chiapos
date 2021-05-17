@@ -117,7 +117,9 @@ namespace RadixSort {
           fill(counts.begin(), counts.end(), 0);
           for (auto & entry_ptr : *entry_ptrs)
           {
-            uint64_t num = Util::SliceInt64FromBytes(entry_ptr, checking_bit_start, bits_for_stage);
+        	uint8_t buff[entry_len];
+        	memcpy(buff, entry_ptr, entry_len);
+            uint64_t num = Util::SliceInt64FromBytes(buff, checking_bit_start, bits_for_stage);
             counts[num]++;
           }
           // Running add to counts array
@@ -135,7 +137,9 @@ namespace RadixSort {
           // Rebuild pointer map
           for (auto & entry_ptr : *entry_ptrs)
           {
-            uint64_t num = Util::SliceInt64FromBytes(entry_ptr, checking_bit_start, bits_for_stage);
+          	uint8_t buff[entry_len];
+          	memcpy(buff, entry_ptr, entry_len);
+            uint64_t num = Util::SliceInt64FromBytes(buff, checking_bit_start, bits_for_stage);
             (*entry_ptrs_temp)[partial_sums[num]] = entry_ptr;
             partial_sums[num]++;
           }
@@ -149,7 +153,9 @@ namespace RadixSort {
           uint64_t prev_val = 0;
           for (auto & entry_ptr : *entry_ptrs)
           {
-            uint64_t new_val = Util::SliceInt64FromBytes(entry_ptr, checking_bit_start, bits_for_stage);
+          	uint8_t buff[entry_len];
+          	memcpy(buff, entry_ptr, entry_len);
+            uint64_t new_val = Util::SliceInt64FromBytes(buff, checking_bit_start, bits_for_stage);
             assert(prev_val <= new_val);
             prev_val = new_val;
           }

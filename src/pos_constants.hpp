@@ -60,8 +60,8 @@ const uint32_t kBatchSizes = 8;
 const uint32_t kEntriesPerPark = 2048;
 
 // To store deltas for EPP entries, the average delta must be less than this number of bits
-const double kMaxAverageDeltaTable1 = 6;
-const double kMaxAverageDelta = 6;
+const double kMaxAverageDeltaTable1 = 5.6;
+const double kMaxAverageDelta = 3.5;
 
 // C3 entries contain deltas for f7 values, the max average size is the following
 const double kC3BitsPerEntry = 2.4;
