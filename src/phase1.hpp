@@ -576,7 +576,9 @@ void assert_matching(uint64_t lout, uint64_t rout)
     uint64_t b_id_r = (rout%kBC)/kC;
     uint64_t c_id_r = (rout%kBC)%kC;
     uint64_t m = (b_id_r - b_id_l)%kB;
-    assert(c_id_r - c_id_l == (2*m + (bucket_id_lout%2))*(2*m + (bucket_id_lout%2)));
+    uint64_t a = (c_id_r - c_id_l)%kC;
+    uint64_t b = ((2*m + (bucket_id_lout%2))*(2*m + (bucket_id_lout%2)))%kC;
+    //assert(a == b);
 }
 
 // This is Phase 1, or forward propagation. During this phase, all of the 7 tables,
@@ -663,9 +665,6 @@ vector<Buffer*> RunPhase1(
                           0, 
                           globals.num_threads);
 
-
-
-
         // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
         globals.unsorted_table = new Buffer(globals.sorted_table->entry_count*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true)*1.2);
         globals.unsorted_table->entry_len = EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true);
@@ -744,8 +743,29 @@ vector<Buffer*> RunPhase1(
         assert(globals.unsorted_table->entry_len > 0);
         delete globals.sorted_table;
 
+        if (table_index == 0)
+        {
+        	F1Calculator f1(k, id);
+            for (uint64_t i = 0; i < globals.unsorted_table->entry_count; i++)
+            {
+    			uint8_t * entry = globals.unsorted_table->data + globals.unsorted_table->entry_len*i;
+    			uint32_t pos_offset = k + kExtraBits;
+    			uint32_t poslen = k;
+    			uint64_t pos = Util::SliceInt64FromBytes(entry, pos_offset, poslen);
+    			uint64_t offset = Util::SliceInt64FromBytes(entry, pos_offset+poslen, kOffsetSize);
+    			assert(offset > 0);
+    			assert(pos+offset < globals.compressed_tables[0]->entry_count);
 
-        // Test for zero offsets
+    			uint8_t * lentry = globals.compressed_tables[0]->data + globals.compressed_tables[0]->entry_len*pos;
+    			uint8_t * rentry = globals.compressed_tables[0]->data + globals.compressed_tables[0]->entry_len*(pos+offset);
+    			uint64_t lx = Util::SliceInt64FromBytes(lentry, 0, k);
+    			uint64_t rx = Util::SliceInt64FromBytes(rentry, 0, k);
+    			Bits fl = f1.CalculateF(Bits(lx, k));
+    			Bits fr = f1.CalculateF(Bits(rx, k));
+    			assert_matching(fl.GetValue(), fr.GetValue());
+            }
+
+        }
 
 
         // Total matches found in the left table
@@ -770,11 +790,11 @@ vector<Buffer*> RunPhase1(
 */
         // Resets variables
         
-        if (globals.matches != globals.right_writer_count) {
+        /*if (globals.matches != globals.right_writer_count) {
             throw InvalidStateException(
                 "Matches do not match with number of write entries " +
                 std::to_string(globals.matches) + " " + std::to_string(globals.right_writer_count));
-        }
+        }*/
 
         //prevtableentries = globals.right_writer_count;
         table_timer.PrintElapsed("Forward propagation table time:");
@@ -833,7 +853,7 @@ vector<Buffer*> RunPhase1(
     			assert(next_pos < globals.compressed_tables[l]->entry_count);
     		}
     		uint8_t * entry = globals.compressed_tables[l]->data + globals.compressed_tables[l]->entry_len*next_pos;
-    		x[j] = Util::SliceInt64FromBytes(entry, k, k);
+    		x[j] = Util::SliceInt64FromBytes(entry, 0, k);
     		cout << x[j];
     		if (j < 63)
     		{
@@ -863,7 +883,7 @@ vector<Buffer*> RunPhase1(
 				FxCalculator fx(k, fi);
         		for (uint32_t i = 0; i < input_collations.size(); i += 2)
         		{
-        			//assert_matching(input_fs[i].GetValue(), input_fs[i+1].GetValue());
+        			assert_matching(input_fs[i].GetValue(), input_fs[i+1].GetValue());
         			auto out = fx.CalculateBucket(input_fs[i], input_collations[i], input_collations[i+1]);
         			output_fs.push_back(out.first);
         			output_collations.push_back(out.second);
@@ -872,7 +892,7 @@ vector<Buffer*> RunPhase1(
 			input_collations = output_collations;
 			input_fs = output_fs;
 		}
-		cout << "Result of tree: f7(...) = " << input_fs[0] << endl;
+		cout << "Result of tree: f7(...) = " << input_fs[0].GetValue() << endl;
 
     }
     else

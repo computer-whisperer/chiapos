@@ -43,7 +43,7 @@
 //#include "phase3.hpp"
 #include "b17phase3.hpp"
 //#include "phase4.hpp"
-//#include "b17phase4.hpp"
+#include "b17phase4.hpp"
 #include "pos_constants.hpp"
 #include "sort_manager.hpp"
 #include "util.hpp"
@@ -269,7 +269,7 @@ public:
 			show_progress,
 			num_threads);
 		p3.PrintElapsed("Time for phase 3 =");
-/*
+
 		std::cout << std::endl
 			  << "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
 			  << " ... " << Timer::GetNow();
@@ -341,8 +341,8 @@ public:
 #else
                 sleep(5 * 60);
 #endif
-            }*/
-      //  } while (!bRenamed);
+            }
+        } while (!bRenamed);
     }
 
 private:

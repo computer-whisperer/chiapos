@@ -18,7 +18,7 @@
 #include "disk.hpp"
 #include "encoding.hpp"
 #include "entry_sizes.hpp"
-#include "phase3.hpp"
+#include "b17phase3.hpp"
 #include "pos_constants.hpp"
 #include "util.hpp"
 
@@ -72,9 +72,9 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
     uint32_t right_entry_size_bytes = res.right_entry_size_bits / 8;
 
     uint8_t *right_entry_buf;
-    auto C1_entry_buf = new uint8_t[Util::ByteAlign(k) / 8];
-    auto C3_entry_buf = new uint8_t[size_C3];
-    auto P7_entry_buf = new uint8_t[P7_park_size];
+    uint8_t* C1_entry_buf = (uint8_t*)malloc(Util::ByteAlign(k) / 8);
+    uint8_t* C3_entry_buf = (uint8_t*)malloc(size_C3);
+    uint8_t* P7_entry_buf = (uint8_t*)malloc(P7_park_size);
 
     std::cout << "\tStarting to write C1 and C3 tables" << std::endl;
 
@@ -84,7 +84,7 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
     // We read each table7 entry, which is sorted by f7, but we don't need f7 anymore. Instead,
     // we will just store pos6, and the deltas in table C3, and checkpoints in tables C1 and C2.
     for (uint64_t f7_position = 0; f7_position < res.final_entries_written; f7_position++) {
-        right_entry_buf = res.table7_sm->ReadEntry(plot_file_reader, 1);
+        right_entry_buf = res.phase3_buffers[6]->data + plot_file_reader;
 
         plot_file_reader += right_entry_size_bytes;
         uint64_t entry_y = Util::SliceInt64FromBytes(right_entry_buf, 0, k);
@@ -94,6 +94,7 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
 
         if (f7_position % kEntriesPerPark == 0 && f7_position > 0) {
             memset(P7_entry_buf, 0, P7_park_size);
+            assert(to_write_p7.GetSize()/8 <= P7_park_size);
             to_write_p7.ToBytes(P7_entry_buf);
             tmp2_disk.Write(final_file_writer_3, (P7_entry_buf), P7_park_size);
             final_file_writer_3 += P7_park_size;
@@ -103,6 +104,7 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
         to_write_p7 += ParkBits(entry_new_pos, k + 1);
 
         if (f7_position % kCheckpoint1Interval == 0) {
+        	assert(entry_y_bits.GetSize() < Util::ByteAlign(k));
             entry_y_bits.ToBytes(C1_entry_buf);
             tmp2_disk.Write(final_file_writer_1, (C1_entry_buf), Util::ByteAlign(k) / 8);
             final_file_writer_1 += Util::ByteAlign(k) / 8;
@@ -139,9 +141,10 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
         }
     }
     Encoding::ANSFree(kC3R);
-    res.table7_sm.reset();
+    //res.table7_sm.reset();
 
     // Writes the final park to disk
+    assert(to_write_p7.GetSize()/8 < P7_park_size);
     memset(P7_entry_buf, 0, P7_park_size);
     to_write_p7.ToBytes(P7_entry_buf);
 
@@ -177,9 +180,10 @@ void b17RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, b17Phase3Res
     final_file_writer_1 += Util::ByteAlign(k) / 8;
     std::cout << "\tFinished writing C2 table" << std::endl;
 
-    delete[] C3_entry_buf;
-    delete[] C1_entry_buf;
-    delete[] P7_entry_buf;
+    free(C1_entry_buf);
+    free(C3_entry_buf);
+    free(P7_entry_buf);
+
 
     final_file_writer_1 = res.header_size - 8 * 3;
     uint8_t table_pointer_bytes[8];

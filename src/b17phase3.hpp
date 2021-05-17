@@ -34,6 +34,7 @@ struct b17Phase3Results {
     uint32_t right_entry_size_bits;
 
     uint32_t header_size;
+    std::vector<Buffer*> phase3_buffers;
   //  std::unique_ptr<b17SortManager> table7_sm;
 };
 
@@ -102,6 +103,7 @@ void WriteParkToFile(
             "Overflowed park buffer, writing " + std::to_string(index - park_buffer) +
             " bytes. Space: " + std::to_string(park_buffer_size));
     }
+    assert(park_size_bytes > (index - park_buffer));
     memset(index, 0x00, park_size_bytes - (index - park_buffer));
 
     final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
@@ -184,7 +186,7 @@ b17Phase3Results b17RunPhase3(
         uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
         right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
 
-        uint64_t left_reader = 0;
+        //uint64_t left_reader = 0;
         uint64_t right_reader = 0;
         // The memory will be used like this, with most memory allocated towards the SortManager,
         // since it needs it
@@ -193,7 +195,7 @@ b17Phase3Results b17RunPhase3(
         uint64_t right_writer_buf_size = 3 * (memory_size - sort_manager_buf_size) / 4;
         uint64_t right_reader_buf_size =
             memory_size - sort_manager_buf_size - right_writer_buf_size;
-        uint8_t *left_reader_buf = (uint8_t*)malloc(sort_manager_buf_size);
+       // uint8_t *left_reader_buf = (uint8_t*)malloc(sort_manager_buf_size);left_reader_buf
         uint8_t *right_writer_buf = (uint8_t*)malloc(right_writer_buf_size);
         uint8_t *right_reader_buf = (uint8_t*)malloc(right_reader_buf_size);
         uint64_t left_reader_buf_entries = sort_manager_buf_size / left_entry_size_bytes;
@@ -235,7 +237,7 @@ b17Phase3Results b17RunPhase3(
         uint64_t greatest_pos = 0;
 
         uint8_t *right_entry_buf;
-        uint8_t *left_entry_disk_buf = left_reader_buf;
+        uint8_t *left_entry_disk_buf;
         uint8_t *left_entry_buf_sm = new uint8_t[left_entry_size_bytes];
 
         uint64_t entry_sort_key, entry_pos, entry_offset;
@@ -262,7 +264,7 @@ b17Phase3Results b17RunPhase3(
                                 right_reader_buf_entries * right_entry_size_bytes,
                                 (phase2_buffers[table_index]->entry_count - right_reader_count) *
                                     right_entry_size_bytes);
-
+                            assert(right_reader < phase2_buffers[table_index]->data_len);
                             memcpy(right_reader_buf, phase2_buffers[table_index]->data+right_reader, readAmt);
                            // tmp_1_disks[table_index + 1].Read(
                            //     right_reader, right_reader_buf, readAmt);
@@ -307,10 +309,12 @@ b17Phase3Results b17RunPhase3(
                         break;
                     }
                 }
-                if (left_reader_count < phase2_buffers[table_index]->entry_count) {
+                if (left_reader_count < phase2_buffers[table_index-1]->entry_count) {
                     // The left entries are in the new format: (sort_key, new_pos), except for table
                     // 1: (y, x).
                     if (table_index == 1) {
+                    	left_entry_disk_buf = phase2_buffers[table_index-1]->data + left_reader_count*left_entry_size_bytes;
+                    	/*
                         if (left_reader_count % left_reader_buf_entries == 0) {
                             uint64_t readAmt = std::min(
                                 left_reader_buf_entries * left_entry_size_bytes,
@@ -322,24 +326,28 @@ b17Phase3Results b17RunPhase3(
                         }
                         left_entry_disk_buf =
                             left_reader_buf +
-                            (left_reader_count % left_reader_buf_entries) * left_entry_size_bytes;
+                            (left_reader_count % left_reader_buf_entries) * left_entry_size_bytes;*/
                     } else {
-                        left_entry_disk_buf = phase2_buffers[table_index-1]->data+left_reader;
-                        left_reader += left_entry_size_bytes;
+                        left_entry_disk_buf = phase2_buffers[table_index-1]->data + left_reader_count*left_entry_size_bytes;
+                        //left_reader += left_entry_size_bytes;
                     }
                     left_reader_count++;
                 }
 
+
+                uint8_t tbuff[32];
+                assert(left_entry_disk_buf+left_entry_size_bytes <= phase2_buffers[table_index-1]->data+phase2_buffers[table_index-1]->data_len);
+                memcpy(tbuff, left_entry_disk_buf, left_entry_size_bytes);
                 // We read the "new_pos" from the L table, which for table 1 is just x. For
                 // other tables, the new_pos
                 if (table_index == 1) {
                     // Only k bits, since this is x
                     left_new_pos[current_pos % kCachedPositionsSize] =
-                        Util::SliceInt64FromBytes(left_entry_disk_buf, 0, k);
+                        Util::SliceInt64FromBytes(tbuff, 0, k);
                 } else {
                     // k+1 bits in case it overflows
                     left_new_pos[current_pos % kCachedPositionsSize] =
-                        Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
+                        Util::SliceInt64FromBytes(tbuff, right_sort_key_size, k);
                 }
             }
 
@@ -392,7 +400,7 @@ b17Phase3Results b17RunPhase3(
 
         delete[] left_entry_buf_sm;
 
-        free(left_reader_buf);
+       // free(left_reader_buf);
         free(right_writer_buf);
         free(right_reader_buf);
 
@@ -557,7 +565,8 @@ b17Phase3Results b17RunPhase3(
         final_table_begin_pointers,
         final_entries_written,
         right_entry_size_bytes * 8,
-        header_size};
+        header_size,
+    	phase2_buffers};
 }
 
 #endif  // SRC_CPP_PHASE3_HPP

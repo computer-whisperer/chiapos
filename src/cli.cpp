@@ -15,6 +15,8 @@
 #include <ctime>
 #include <set>
 
+#include <mcheck.h>
+
 #include "cxxopts.hpp"
 #include "../lib/include/picosha2.hpp"
 #include "plotter_disk.hpp"
@@ -64,6 +66,8 @@ void HelpAndQuit(cxxopts::Options options)
 }
 
 int main(int argc, char *argv[]) try {
+	mcheck(0);
+
     cxxopts::Options options(
         "ProofOfSpace", "Utility for plotting, generating and verifying proofs of space.");
     options.positional_help("(create/prove/verify/check) param1 param2 ")
