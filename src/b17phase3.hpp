@@ -150,8 +150,12 @@ b17Phase3Results b17RunPhase3(
     uint64_t final_entries_written = 0;
     uint32_t right_entry_size_bytes = 0;
 
-    //std::unique_ptr<b17SortManager> L_sort_manager;
-    //std::unique_ptr<b17SortManager> R_sort_manager;
+    Buffer * r_temp_buffer = NULL;
+    Buffer * l_temp_buffer = NULL;
+
+    std::vector<Buffer *> phase3_buffers(7);
+    phase3_buffers[0] = phase2_buffers[0];
+
 
     // These variables are used in the WriteParkToFile method. They are preallocatted here
     // to save time.
@@ -183,27 +187,14 @@ b17Phase3Results b17RunPhase3(
         // be higher than 2^k and therefore k+1 bits are used.
         uint32_t right_sort_key_size = k;
 
-        uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
-        right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
+        //uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
+        //right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
 
-        //uint64_t left_reader = 0;
-        uint64_t right_reader = 0;
-        // The memory will be used like this, with most memory allocated towards the SortManager,
-        // since it needs it
-        // [---------------------------SM/LR---------------------|----------RW--------|---RR---]
-        uint64_t sort_manager_buf_size = floor(kMemSortProportion * memory_size);
-        uint64_t right_writer_buf_size = 3 * (memory_size - sort_manager_buf_size) / 4;
-        uint64_t right_reader_buf_size =
-            memory_size - sort_manager_buf_size - right_writer_buf_size;
-       // uint8_t *left_reader_buf = (uint8_t*)malloc(sort_manager_buf_size);left_reader_buf
-        uint8_t *right_writer_buf = (uint8_t*)malloc(right_writer_buf_size);
-        uint8_t *right_reader_buf = (uint8_t*)malloc(right_reader_buf_size);
-        uint64_t left_reader_buf_entries = sort_manager_buf_size / left_entry_size_bytes;
-        uint64_t right_reader_buf_entries = right_reader_buf_size / right_entry_size_bytes;
         uint64_t left_reader_count = 0;
         uint64_t right_reader_count = 0;
-        uint64_t total_r_entries = 0;
 
+        r_temp_buffer = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index+1, false)*phase2_buffers[table_index]->Count());
+        r_temp_buffer->entry_len = EntrySizes::GetMaxEntrySize(k, table_index+1, false);
 
        // if (table_index > 1) {
        //     L_sort_manager->ChangeMemory(memory, sort_manager_buf_size);
@@ -220,7 +211,6 @@ b17Phase3Results b17RunPhase3(
             0,
             0);*/
 
-        phase2_buffers[table_index]->insert_pos->store(0);
 
         bool should_read_entry = true;
         std::vector<uint64_t> left_new_pos(kCachedPositionsSize);
@@ -238,7 +228,7 @@ b17Phase3Results b17RunPhase3(
 
         uint8_t *right_entry_buf;
         uint8_t *left_entry_disk_buf;
-        uint8_t *left_entry_buf_sm = new uint8_t[left_entry_size_bytes];
+        //uint8_t *left_entry_buf_sm = new uint8_t[left_entry_size_bytes];
 
         uint64_t entry_sort_key, entry_pos, entry_offset;
         uint64_t cached_entry_sort_key = 0;
@@ -252,27 +242,14 @@ b17Phase3Results b17RunPhase3(
             if (end_of_right_table || current_pos <= greatest_pos) {
                 while (!end_of_right_table) {
                     if (should_read_entry) {
-                        if (right_reader_count == phase2_buffers[table_index]->entry_count) {
+                        if (right_reader_count == phase2_buffers[table_index]->Count()) {
                             end_of_right_table = true;
                             end_of_table_pos = current_pos;
                             break;
                         }
                         // The right entries are in the format from backprop, (sort_key, pos,
                         // offset)
-                        if (right_reader_count % right_reader_buf_entries == 0) {
-                            uint64_t readAmt = std::min(
-                                right_reader_buf_entries * right_entry_size_bytes,
-                                (phase2_buffers[table_index]->entry_count - right_reader_count) *
-                                    right_entry_size_bytes);
-                            assert(right_reader < phase2_buffers[table_index]->data_len);
-                            memcpy(right_reader_buf, phase2_buffers[table_index]->data+right_reader, readAmt);
-                           // tmp_1_disks[table_index + 1].Read(
-                           //     right_reader, right_reader_buf, readAmt);
-                            right_reader += readAmt;
-                        }
-                        right_entry_buf =
-                            right_reader_buf + (right_reader_count % right_reader_buf_entries) *
-                                                   right_entry_size_bytes;
+                        right_entry_buf = phase2_buffers[table_index]->data + phase2_buffers[table_index]->entry_len*right_reader_count;
                         right_reader_count++;
 
                         entry_sort_key =
@@ -309,35 +286,16 @@ b17Phase3Results b17RunPhase3(
                         break;
                     }
                 }
-                if (left_reader_count < phase2_buffers[table_index-1]->entry_count) {
+                if (left_reader_count < phase3_buffers[table_index-1]->Count()) {
                     // The left entries are in the new format: (sort_key, new_pos), except for table
                     // 1: (y, x).
-                    if (table_index == 1) {
-                    	left_entry_disk_buf = phase2_buffers[table_index-1]->data + left_reader_count*left_entry_size_bytes;
-                    	/*
-                        if (left_reader_count % left_reader_buf_entries == 0) {
-                            uint64_t readAmt = std::min(
-                                left_reader_buf_entries * left_entry_size_bytes,
-                                (phase2_buffers[table_index]->entry_count - left_reader_count) *
-                                    left_entry_size_bytes);
-                            memcpy(left_reader_buf, phase2_buffers[table_index-1]->data+left_reader, readAmt);
-                            //tmp_1_disks[table_index].Read(left_reader, left_reader_buf, readAmt);
-                            left_reader += readAmt;
-                        }
-                        left_entry_disk_buf =
-                            left_reader_buf +
-                            (left_reader_count % left_reader_buf_entries) * left_entry_size_bytes;*/
-                    } else {
-                        left_entry_disk_buf = phase2_buffers[table_index-1]->data + left_reader_count*left_entry_size_bytes;
-                        //left_reader += left_entry_size_bytes;
-                    }
+                    left_entry_disk_buf = phase3_buffers[table_index-1]->data + left_reader_count*phase3_buffers[table_index-1]->entry_len;
                     left_reader_count++;
                 }
 
 
                 uint8_t tbuff[32];
-                assert(left_entry_disk_buf+left_entry_size_bytes <= phase2_buffers[table_index-1]->data+phase2_buffers[table_index-1]->data_len);
-                memcpy(tbuff, left_entry_disk_buf, left_entry_size_bytes);
+                memcpy(tbuff, left_entry_disk_buf, phase3_buffers[table_index-1]->entry_len);
                 // We read the "new_pos" from the L table, which for table 1 is just x. For
                 // other tables, the new_pos
                 if (table_index == 1) {
@@ -382,9 +340,7 @@ b17Phase3Results b17RunPhase3(
                     to_write += Bits(
                         old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
                         right_sort_key_size);
-                    to_write.ToBytes(phase2_buffers[table_index]->data + phase2_buffers[table_index]->GetInsertionOffset(to_write.GetSize()/8));
-                    //R_sort_manager->AddToCache(to_write);
-                    total_r_entries++;
+                    r_temp_buffer->PushEntry(to_write);
                 }
             }
             current_pos += 1;
@@ -393,31 +349,23 @@ b17Phase3Results b17RunPhase3(
 
         // Remove no longer needed file
         //tmp_1_disks[table_index].Truncate(0);
+        if (table_index != 1)
+        {
+        	delete phase2_buffers[table_index-1];
+        }
 
         // Flush cache so all entries are written to buckets
         //R_sort_manager->FlushCache();
 
 
-        delete[] left_entry_buf_sm;
-
-       // free(left_reader_buf);
-        free(right_writer_buf);
-        free(right_reader_buf);
-
         Timer computation_pass_2_timer;
 
-        // The memory will be used like this, with most memory allocated towards the
-        // LeftSortManager, since it needs it
-        // [---------------------------LSM/RR-----------------------------------|---------RSM/RW---------]
-        right_reader = 0;
-        right_reader_buf_size = floor(kMemSortProportionLinePoint * memory_size);
-        right_writer_buf_size = memory_size - right_reader_buf_size;
-        right_reader_buf = (uint8_t*)malloc(right_reader_buf_size);
-        right_writer_buf = (uint8_t*)malloc(right_writer_buf_size);
         right_reader_count = 0;
         uint64_t final_table_writer = final_table_begin_pointers[table_index];
 
         final_entries_written = 0;
+
+        r_temp_buffer = RadixSort::SortToMemory(r_temp_buffer, 0, thread_num);
 
       /*  if (table_index > 1) {
             // Make sure all files are removed
@@ -437,9 +385,8 @@ b17Phase3Results b17RunPhase3(
             filename + ".p3s.t" + std::to_string(table_index + 1),
             0,
             0);*/
-        phase2_buffers[table_index]->entry_len = right_entry_size_bytes;
-        phase2_buffers[table_index] = RadixSort::SortToMemory(phase2_buffers[table_index], 0, thread_num);
-        phase2_buffers[table_index]->insert_pos->store(0);
+        l_temp_buffer = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index + 1, false)*r_temp_buffer->Count());
+        l_temp_buffer->entry_len = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
 
         std::vector<uint8_t> park_deltas;
         std::vector<uint64_t> park_stubs;
@@ -453,13 +400,9 @@ b17Phase3Results b17RunPhase3(
         // The final table will simply store the deltas between each line_point, in fixed space
         // groups(parks), with a checkpoint in each group.
         Bits right_entry_bits;
-        int added_to_cache = 0;
         uint8_t index_size = table_index == 6 ? k + 1 : k;
-        for (uint64_t index = 0; index < total_r_entries; index++) {
-        	right_reader_entry_buf = phase2_buffers[table_index]->data + right_reader;
-            //right_reader_entry_buf = R_sort_manager->ReadEntry(right_reader, 2);
-            right_reader += right_entry_size_bytes;
-            right_reader_count++;
+        for (uint64_t index = 0; index < r_temp_buffer->Count(); index++) {
+        	right_reader_entry_buf = r_temp_buffer->data + index*r_temp_buffer->entry_len;
 
             // Right entry is read as (line_point, sort_key)
             uint128_t line_point = Util::SliceInt128FromBytes(right_reader_entry_buf, 0, line_point_size);
@@ -469,10 +412,10 @@ b17Phase3Results b17RunPhase3(
             // Write the new position (index) and the sort key
             Bits to_write = Bits(sort_key, right_sort_key_size);
             to_write += Bits(index, index_size);
+            l_temp_buffer->PushEntry(to_write);
 
-            to_write.ToBytes(phase2_buffers[table_index]->data + phase2_buffers[table_index]->GetInsertionOffset(to_write.GetSize()/8));
+            //to_write.ToBytes(phase2_buffers[table_index]->data + phase2_buffers[table_index]->GetInsertionOffset(to_write.GetSize()/8));
             //L_sort_manager->AddToCache(to_write);
-            added_to_cache++;
 
             // Every EPP entries, writes a park
             if (index % kEntriesPerPark == 0) {
@@ -517,11 +460,8 @@ b17Phase3Results b17RunPhase3(
             }
             last_line_point = line_point;
         }
-       // R_sort_manager.reset();
-       // L_sort_manager->FlushCache();
-
-        phase2_buffers[table_index]->entry_len = right_entry_size_bytes;
-        phase2_buffers[table_index] = RadixSort::SortToMemory(phase2_buffers[table_index], 0, thread_num);
+        delete r_temp_buffer;
+        phase3_buffers[table_index] = RadixSort::SortToMemory(l_temp_buffer, 0, thread_num);
 
         computation_pass_2_timer.PrintElapsed("\tSecond computation pass time:");
 
@@ -566,7 +506,7 @@ b17Phase3Results b17RunPhase3(
         final_entries_written,
         right_entry_size_bytes * 8,
         header_size,
-    	phase2_buffers};
+    	phase3_buffers};
 }
 
 #endif  // SRC_CPP_PHASE3_HPP

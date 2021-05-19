@@ -26,7 +26,6 @@ struct Buffer
     std::atomic<uint64_t>* insert_pos;
 
     uint64_t entry_len = 0;
-    uint64_t entry_count = 0;
 
     explicit Buffer(const uint64_t size)
     {
@@ -46,6 +45,18 @@ struct Buffer
       uint64_t offset = insert_pos->fetch_add(len);
       assert((offset+len) <= data_len);
       return offset;
+    }
+
+    uint64_t PushEntry(Bits bits)
+    {
+    	uint64_t offset = GetInsertionOffset(entry_len);
+    	bits.ToBytes(data + offset);
+    	return offset;
+    }
+
+    uint64_t Count()
+    {
+    	return *insert_pos/entry_len;
     }
 
     ~Buffer()

@@ -213,7 +213,7 @@ namespace RadixSort {
         uint32_t const num_threads)
     {
     	time_t start_time = std::time(NULL);
-    	uint64_t num_entries = input_buff->entry_count;
+    	uint64_t num_entries = input_buff->Count();
     	uint32_t entry_len = input_buff->entry_len;
 
     	assert(num_entries*entry_len <= input_buff->data_len);
@@ -258,7 +258,7 @@ namespace RadixSort {
         delete input_buff;
         Buffer * output_buff = new Buffer(num_entries*entry_len);
         output_buff->entry_len = entry_len;
-        output_buff->entry_count = num_entries;
+        *output_buff->insert_pos = num_entries*entry_len;
 
         std::cout << "    Thread stage A took " << std::time(NULL) - start_time << "seconds." << std::endl;
         time_t prev_time = time(NULL);

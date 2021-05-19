@@ -44,11 +44,8 @@ std::vector<Buffer*> b17RunPhase2(
 
     std::vector<uint64_t> old_entry_counts = std::vector<uint64_t>(7, 0);
     std::vector<uint64_t> old_entry_lens = std::vector<uint64_t>(7, 0);
-    for (int i = 0; i < 7; i++)
-    {
-    	old_entry_counts[i] = phase1_buffers[i]->entry_count;
-    	old_entry_lens[i] = phase1_buffers[i]->entry_len;
-    }
+
+    std::vector<Buffer*> phase2_buffers(7);
 
    // std::vector<uint64_t> new_table_sizes = std::vector<uint64_t>(8, 0);
    // new_table_sizes[7] = table_sizes[7];
@@ -57,6 +54,9 @@ std::vector<Buffer*> b17RunPhase2(
     std::unique_ptr<b17SortManager> R_sort_manager;
     std::unique_ptr<b17SortManager> L_sort_manager;
     */
+    Buffer * r_temp_buffer = phase1_buffers[6];
+    Buffer * l_temp_buffer = NULL;
+
     // Iterates through each table (with a left and right pointer), starting at 6 & 7.
     for (int table_index = 7; table_index > 1; --table_index) {
         // std::vector<std::pair<uint64_t, uint64_t> > match_positions;
@@ -67,45 +67,31 @@ std::vector<Buffer*> b17RunPhase2(
         uint16_t left_metadata_size = kVectorLens[table_index] * k;
 
         // The entry that we are reading (no metadata)
-        uint16_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index - 1, false);
+        //uint16_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index - 1, false);
 
         // The right entries which we read and write (the already have no metadata, since they
         // have been pruned in previous iteration)
-        uint16_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
+        //uint16_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
 
-        uint64_t left_reader = 0;
-        uint64_t left_writer = 0;
-        uint64_t right_reader = 0;
-        uint64_t right_writer = 0;
+
         // The memory will be used like this, with most memory allocated towards the SortManager,
         // since it needs it
         // [--------------------------SM/RR-------------------------|-----------LW-------------|--RW--|--LR--]
-        uint64_t sort_manager_buf_size = floor(kMemSortProportion * memory_size);
-        uint64_t left_writer_buf_size = 3 * (memory_size - sort_manager_buf_size) / 4;
-        uint64_t other_buf_sizes = (memory_size - sort_manager_buf_size - left_writer_buf_size) / 2;
-        uint8_t * right_reader_buf = (uint8_t*)malloc(sort_manager_buf_size);
-        uint8_t * left_writer_buf = (uint8_t*)malloc(left_writer_buf_size);
-        uint8_t * right_writer_buf = (uint8_t*)malloc(other_buf_sizes);
-        uint8_t * left_reader_buf = (uint8_t*)malloc(other_buf_sizes);
-        uint64_t right_reader_buf_entries = sort_manager_buf_size / right_entry_size_bytes;
-        uint64_t left_writer_buf_entries = left_writer_buf_size / left_entry_size_bytes;
-        uint64_t right_writer_buf_entries = other_buf_sizes / right_entry_size_bytes;
-        uint64_t left_reader_buf_entries = other_buf_sizes / left_entry_size_bytes;
+
         uint64_t left_reader_count = 0;
         uint64_t right_reader_count = 0;
-        uint64_t left_writer_count = 0;
         uint64_t right_writer_count = 0;
-
-        Buffer * test = phase1_buffers.at(table_index - 2);
-        std::atomic<uint64_t> * test2 = test->insert_pos;
-        uint64_t left_buff_original_insert_pos = *test2;
-        phase1_buffers[table_index - 2]->insert_pos->store(0);
-
 /*
         if (table_index != 7) {
             R_sort_manager->ChangeMemory(memory, sort_manager_buf_size);
         }
         * */
+
+        l_temp_buffer = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index-1, false)*phase1_buffers[table_index-2]->Count());
+        l_temp_buffer->entry_len = EntrySizes::GetMaxEntrySize(k, table_index-1, false);
+
+        phase2_buffers[table_index-1] = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index, false)*phase1_buffers[table_index-1]->Count());
+        phase2_buffers[table_index-1]->entry_len = EntrySizes::GetMaxEntrySize(k, table_index, false);
 
 /*
         L_sort_manager = std::make_unique<b17SortManager>(
@@ -162,7 +148,7 @@ std::vector<Buffer*> b17RunPhase2(
         uint8_t *left_entry_buf;
         uint8_t *new_left_entry_buf;
         uint8_t *right_entry_buf;
-        uint8_t *right_entry_buf_SM = new uint8_t[right_entry_size_bytes];
+        //uint8_t *right_entry_buf_SM = new uint8_t[right_entry_size_bytes];
 
         // Go through all right entries, and keep going since write pointer is behind read
         // pointer
@@ -191,41 +177,31 @@ std::vector<Buffer*> b17RunPhase2(
 
                 while (!end_of_right_table) {
                     if (should_read_entry) {
-                        if (right_reader_count == phase1_buffers[table_index-1]->entry_count) {
+                        if (right_reader_count == r_temp_buffer->Count()) {
                             // Table R has ended, don't read any more (but keep writing)
                             end_of_right_table = true;
                             end_of_table_pos = current_pos;
                             break;
                         }
                         // Need to read another entry at the current position
-						if (right_reader_count % right_reader_buf_entries == 0) {
-							uint64_t readAmt = std::min(
-								right_reader_buf_entries * right_entry_size_bytes,
-								(phase1_buffers[table_index-1]->entry_count - right_reader_count) *
-									right_entry_size_bytes);
-							memcpy(right_reader_buf, phase1_buffers[table_index-1]->data + right_reader, readAmt);
-							right_reader += readAmt;
-						}
-						right_entry_buf =
-							right_reader_buf + (right_reader_count % right_reader_buf_entries) *
-												   right_entry_size_bytes;
-
+						right_entry_buf = r_temp_buffer->data + right_reader_count*r_temp_buffer->entry_len;
                         right_reader_count++;
 
                         if (table_index == 7) {
                             // This is actually y for table 7
                             entry_sort_key = Util::SliceInt64FromBytes(right_entry_buf, 0, k);
                             entry_pos = Util::SliceInt64FromBytes(right_entry_buf, k, pos_size);
-                            assert(entry_pos >= current_pos);
                             entry_offset = Util::SliceInt64FromBytes(
                                 right_entry_buf, k + pos_size, kOffsetSize);
                         } else {
                             entry_pos = Util::SliceInt64FromBytes(right_entry_buf, 0, pos_size);
+
                             entry_offset =
                                 Util::SliceInt64FromBytes(right_entry_buf, pos_size, kOffsetSize);
                             entry_sort_key = Util::SliceInt64FromBytes(
                                 right_entry_buf, pos_size + kOffsetSize, k);
                         }
+                        assert(entry_pos >= current_pos);
                     } else if (cached_entry_pos == current_pos) {
                         // We have a cached entry at this position
                         entry_sort_key = cached_entry_sort_key;
@@ -270,19 +246,10 @@ std::vector<Buffer*> b17RunPhase2(
                     }
                 }
                 // Only process left table if we still have entries - should fix read 0 issue
-                if(left_reader_count < old_entry_counts[table_index - 2])
+                if(left_reader_count < phase1_buffers[table_index - 2]->Count())
                 {
                     // ***Reads a left entry
-                    if (left_reader_count % left_reader_buf_entries == 0) {
-                        uint64_t readAmt = std::min(
-                            left_reader_buf_entries * left_entry_size_bytes,
-                            (old_entry_counts[table_index - 2] - left_reader_count) * left_entry_size_bytes);
-                        memcpy(left_reader_buf, phase1_buffers[table_index - 2]->data + left_reader, readAmt);
-                       // tmp_1_disks[table_index - 1].Read(left_reader, left_reader_buf, readAmt);
-                        left_reader += readAmt;
-                    }
-                    left_entry_buf = left_reader_buf + (left_reader_count % left_reader_buf_entries) *
-                                                       left_entry_size_bytes;
+                    left_entry_buf = phase1_buffers[table_index - 2]->data + left_reader_count*phase1_buffers[table_index-2]->entry_len;
                     left_reader_count++;
 
                     // If this left entry is used, we rewrite it. If it's not used, we ignore it.
@@ -299,10 +266,6 @@ std::vector<Buffer*> b17RunPhase2(
                                 Util::SliceInt64FromBytes(left_entry_buf, 0, left_metadata_size);
                         }
 
-                        new_left_entry_buf =
-                            left_writer_buf +
-                            (left_writer_count % left_writer_buf_entries) * left_entry_size_bytes;
-                        left_writer_count++;
 
                         Bits new_left_entry;
                         if (table_index > 2) {
@@ -312,29 +275,14 @@ std::vector<Buffer*> b17RunPhase2(
                             new_left_entry += Bits(entry_pos, pos_size);
                             new_left_entry += Bits(entry_offset, kOffsetSize);
                             new_left_entry += Bits(left_entry_counter, k);
-
-                            // If we are not taking up all the bits, make sure they are zeroed
-                            if (Util::ByteAlign(new_left_entry.GetSize()) < left_entry_size_bytes * 8) {
-                                new_left_entry +=
-                                    Bits(0, left_entry_size_bytes * 8 - new_left_entry.GetSize());
-                            }
-                            new_left_entry.ToBytes(phase1_buffers[table_index - 2]->data + phase1_buffers[table_index - 2]->GetInsertionOffset(new_left_entry.GetSize()/8));
-                        } else {
-                            // For table one entries, we don't care about sort key, only x.
-                            // Also, we don't use the sort manager, since we won't sort it.
-                            new_left_entry += Bits(entry_metadata, left_metadata_size);
-                            new_left_entry.ToBytes(new_left_entry_buf);
-                            if (left_writer_count % left_writer_buf_entries == 0) {
-                                memcpy(phase1_buffers[table_index - 2]->data + left_writer, left_writer_buf, left_writer_buf_entries * left_entry_size_bytes);
-                                /*
-                                tmp_1_disks[table_index - 1].Write(
-                                    left_writer,
-                                    left_writer_buf,
-                                    left_writer_buf_entries * left_entry_size_bytes);*/
-                                left_writer += left_writer_buf_entries * left_entry_size_bytes;
-                            }
                         }
-
+                        else
+                        {
+                        	// For table one entries, we don't care about sort key, only x.
+                        	// Also, we don't use the sort manager, since we won't sort it.
+                        	new_left_entry += Bits(entry_metadata, left_metadata_size);
+                        }
+                        l_temp_buffer->PushEntry(new_left_entry);
                         // Mapped positions, so we can rewrite the R entry properly
                         new_positions[current_pos % kCachedPositionsSize] = left_entry_counter;
 
@@ -364,49 +312,34 @@ std::vector<Buffer*> b17RunPhase2(
                     Bits new_right_entry =
                         table_index == 7
                             ? Bits(old_sort_keys[write_pointer_pos % kReadMinusWrite][counter], k)
-                            : Bits(
-                                  old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
-                                  k);
+                            : Bits(old_sort_keys[write_pointer_pos % kReadMinusWrite][counter], k);
                     new_right_entry += new_pos_bin;
                     // match_positions.push_back(std::make_pair(new_pos, new_offset_pos));
                     new_right_entry.AppendValue(new_offset_pos - new_pos, kOffsetSize);
 
-                    // Calculate right entry pointer for output
-                    right_entry_buf =
-                        right_writer_buf +
-                        (right_writer_count % right_writer_buf_entries) * right_entry_size_bytes;
-                    right_writer_count++;
-
-                    if (Util::ByteAlign(new_right_entry.GetSize()) < right_entry_size_bytes * 8) {
-                        memset(right_entry_buf, 0, right_entry_size_bytes);
-                    }
-                    new_right_entry.ToBytes(right_entry_buf);
-                    // Check for write out to disk
-                    if (right_writer_count % right_writer_buf_entries == 0) {
-                    	memcpy(phase1_buffers[table_index-1]->data + right_writer, right_writer_buf, right_writer_buf_entries * right_entry_size_bytes);
-                        /*tmp_1_disks[table_index].Write(
-                            right_writer,
-                            right_writer_buf,
-                            right_writer_buf_entries * right_entry_size_bytes);*/
-                        right_writer += right_writer_buf_entries * right_entry_size_bytes;
-                    }
+                    phase2_buffers[table_index-1]->PushEntry(new_right_entry);
                 }
             }
             ++current_pos;
         }
-        phase1_buffers[table_index-2]->entry_len = left_entry_size_bytes;
-        phase1_buffers[table_index-2]->entry_count = left_entry_counter;
 
         std::cout << "\tWrote left entries: " << left_entry_counter << std::endl;
         table_timer.PrintElapsed("Total backpropagation time::");
-        memcpy(phase1_buffers[table_index-1]->data + right_writer, right_writer_buf,(right_writer_count % right_writer_buf_entries) * right_entry_size_bytes);
+
+        delete phase1_buffers[table_index-1];
+        phase1_buffers[table_index-1] = NULL;
+        if (table_index != 7)
+        {
+        	delete r_temp_buffer;
+        }
+        r_temp_buffer = l_temp_buffer;
+
         /*
         tmp_1_disks[table_index].Write(
             right_writer,
             right_writer_buf,
             (right_writer_count % right_writer_buf_entries) * right_entry_size_bytes);
             */
-        right_writer += (right_writer_count % right_writer_buf_entries) * right_entry_size_bytes;
 
         //if (table_index != 7) {
           //  R_sort_manager.reset();
@@ -414,38 +347,123 @@ std::vector<Buffer*> b17RunPhase2(
 
         // Truncates the right table
         //tmp_1_disks[table_index].Truncate(right_writer);
-    	phase1_buffers[table_index-1]->entry_len = right_entry_size_bytes;
-    	phase1_buffers[table_index-1]->entry_count = right_writer_count;
-        if (table_index == 2) {
-            // Writes remaining entries for table1
-        	memcpy(phase1_buffers[table_index - 2]->data + left_writer,
-                    left_writer_buf,
-                    (left_writer_count % left_writer_buf_entries) * left_entry_size_bytes);
 
-            left_writer += (left_writer_count % left_writer_buf_entries) * left_entry_size_bytes;
+        if (table_index == 2) {
 
             // Truncates the left table
             //tmp_1_disks[table_index - 1].Truncate(left_writer);
         } else {
 
-        	phase1_buffers[table_index-2] = RadixSort::SortToMemory(
-        			phase1_buffers[table_index-2],
+        	r_temp_buffer = RadixSort::SortToMemory(
+        			l_temp_buffer,
         	        0,
         	        num_threads);
             //L_sort_manager->FlushCache();
             //R_sort_manager = std::move(L_sort_manager);
         }
-        delete[] right_entry_buf_SM;
         if (show_progress) {
             progress(2, 8 - table_index, 6);
         }
-        free(right_reader_buf);
-        free(left_writer_buf);
-        free(right_writer_buf);
-        free(left_reader_buf);
     }
+
+    phase2_buffers[0] = l_temp_buffer;
+
+
+
+    // Test that we can draw good proofs from this
+    uint64_t challenge = 0x123456;
+    challenge = challenge%(1ULL<<k);
+    uint64_t i;
+    cout << "Looking for : " << challenge << endl;
+
+    for (i = 0; i < phase2_buffers[6]->Count(); i++)
+	{
+		uint8_t * entry = phase2_buffers[6]->data + phase2_buffers[6]->entry_len*i;
+		uint64_t value = Util::SliceInt64FromBytes(entry, 0, k);
+		if (value == challenge)
+		{
+			break;
+		}
+	}
+	if (i < phase2_buffers[6]->Count())
+	{
+	cout << "Got inputs: ";
+	vector<uint64_t> x(64);
+	for (uint32_t j = 0; j < 64; j++)
+	{
+		uint64_t next_pos = i;
+		uint32_t l;
+		for (l = 6; l > 0; l--)
+		{
+
+			uint8_t * entry = phase2_buffers[l]->data + phase2_buffers[l]->entry_len*next_pos;
+			uint32_t pos_offset = (l==6) ? k : k;
+			uint32_t poslen = k;
+			uint64_t pos = Util::SliceInt64FromBytes(entry, pos_offset, poslen);
+			uint64_t offset = Util::SliceInt64FromBytes(entry, pos_offset+poslen, kOffsetSize);
+			assert(offset > 0);
+			uint8_t mask = 1ULL<<(l-1);
+			if (j & mask)
+			{
+				next_pos = pos + offset;
+			}
+			else
+			{
+				next_pos = pos;
+			}
+			assert(next_pos < phase2_buffers[l]->Count());
+		}
+		uint8_t * entry = phase2_buffers[l]->data + phase2_buffers[l]->entry_len*next_pos;
+		x[j] = Util::SliceInt64FromBytes(entry, 0, k);
+		cout << x[j];
+		if (j < 63)
+		{
+			cout << ", ";
+		}
+	}
+	cout << endl;
+	// Check for matching conditions and re-combine
+	vector<Bits> input_collations;
+	vector<Bits> input_fs;
+	for (uint32_t fi = 1; fi <= 7; fi++)
+	{
+		vector<Bits> output_fs;
+		vector<Bits> output_collations;
+		if (fi == 1)
+		{
+			F1Calculator f1(k, id);
+			for (uint32_t i = 0; i < x.size(); i++)
+			{
+				Bits b = Bits(x[i], k);
+				output_collations.push_back(b);
+				output_fs.push_back(f1.CalculateF(b));
+			}
+		}
+		else
+		{
+			FxCalculator fx(k, fi);
+			for (uint32_t i = 0; i < input_collations.size(); i += 2)
+			{
+				//assert_matching(input_fs[i].GetValue(), input_fs[i+1].GetValue());
+				auto out = fx.CalculateBucket(input_fs[i], input_collations[i], input_collations[i+1]);
+				output_fs.push_back(out.first);
+				output_collations.push_back(out.second);
+			}
+		}
+		input_collations = output_collations;
+		input_fs = output_fs;
+	}
+	cout << "Result of tree: f7(...) = " << input_fs[0].GetValue()%(1ULL<<k) << endl;
+
+	}
+	else
+	{
+	cout << "Could not find " << challenge << " in table 7." << endl;
+	}
+
+
     //L_sort_manager.reset();
-    return phase1_buffers;
+    return phase2_buffers;
 }
 
 #endif  // SRC_CPP_PHASE2_HPP

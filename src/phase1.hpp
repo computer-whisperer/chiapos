@@ -103,7 +103,7 @@ void* phase1_thread(THREADDATA* ptd)
 
     // Start at left table pos = 0 and iterate through the whole table. Note that the left table
     // will already be sorted by y
-    uint64_t totalstripes = (globals.sorted_table->entry_count + globals.stripe_size - 1) / globals.stripe_size;
+    uint64_t totalstripes = (globals.sorted_table->Count() + globals.stripe_size - 1) / globals.stripe_size;
     uint64_t threadstripes = (totalstripes + globals.num_threads - 1) / globals.num_threads;
 
     for (uint64_t stripe = 0; stripe < threadstripes; stripe++) {
@@ -167,9 +167,9 @@ void* phase1_thread(THREADDATA* ptd)
             Sem::Post(ptd->mine);
         }
 */
-        while (pos < globals.sorted_table->entry_count + 1) {
+        while (pos < globals.sorted_table->Count() + 1) {
             PlotEntry left_entry = PlotEntry();
-            if (pos >= globals.sorted_table->entry_count) {
+            if (pos >= globals.sorted_table->Count()) {
                 end_of_table = true;
                 left_entry.y = 0;
                 left_entry.left_metadata = 0;
@@ -329,7 +329,7 @@ void* phase1_thread(THREADDATA* ptd)
                                 new_left_entry = entry->read_posoffset;
                                 uint64_t pos = (new_left_entry>>kOffsetSize)%(1ULL << pos_size);
                                 uint64_t offset = new_left_entry%(1ULL << kOffsetSize);
-                                assert(pos + offset < globals.compressed_tables[globals.table_index-1]->entry_count);
+                                assert(pos + offset < globals.compressed_tables[globals.table_index-1]->Count());
                                 assert(offset > 0);
                             }
 
@@ -565,20 +565,24 @@ void* F1thread(int const index, const uint8_t* id)
     return 0;
 }
 
-void assert_matching(uint64_t lout, uint64_t rout)
+void assert_matching(int64_t lout, int64_t rout)
 {
 
-    uint64_t bucket_id_lout = lout/kBC;
-    uint64_t bucket_id_rout = rout/kBC;
+	int64_t bucket_id_lout = lout/kBC;
+    int64_t bucket_id_rout = rout/kBC;
     assert(bucket_id_lout + 1 == bucket_id_rout);
-    uint64_t b_id_l = (lout%kBC)/kC;
-    uint64_t c_id_l = (lout%kBC)%kC;
-    uint64_t b_id_r = (rout%kBC)/kC;
-    uint64_t c_id_r = (rout%kBC)%kC;
-    uint64_t m = (b_id_r - b_id_l)%kB;
-    uint64_t a = (c_id_r - c_id_l)%kC;
-    uint64_t b = ((2*m + (bucket_id_lout%2))*(2*m + (bucket_id_lout%2)))%kC;
-    //assert(a == b);
+    int64_t b_id_l = (lout%kBC)/kC;
+    int64_t c_id_l = (lout%kBC)%kC;
+    int64_t b_id_r = (rout%kBC)/kC;
+    int64_t c_id_r = (rout%kBC)%kC;
+    int64_t m = (kB + b_id_r - b_id_l)%kB;
+    assert(m < (1ULL<<kExtraBits));
+    int64_t a = c_id_r - c_id_l;
+    int64_t b = 2*m + (bucket_id_lout%2);
+    int64_t c = (b*b)%kC;
+    int64_t d = (kC + a)%kC;
+    assert(c == d);
+
 }
 
 // This is Phase 1, or forward propagation. During this phase, all of the 7 tables,
@@ -608,7 +612,7 @@ vector<Buffer*> RunPhase1(
     globals.table_index = 0;
     globals.unsorted_table = new Buffer(16*(1ULL<<k));
     globals.unsorted_table->entry_len = 16; //EntrySizes::GetMaxEntrySize(k, 1, true);
-    globals.unsorted_table->entry_count = 1ULL<<k;
+    *globals.unsorted_table->insert_pos = 16*(1ULL<<k);
     globals.compressed_tables.resize(7);
     /*
     globals.L_sort_manager = std::make_unique<SortManager>(
@@ -666,10 +670,10 @@ vector<Buffer*> RunPhase1(
                           globals.num_threads);
 
         // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
-        globals.unsorted_table = new Buffer(globals.sorted_table->entry_count*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true)*1.2);
+        globals.unsorted_table = new Buffer(globals.sorted_table->Count()*EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true)*1.2);
         globals.unsorted_table->entry_len = EntrySizes::GetMaxEntrySize(k, table_index + 1+1, true);
         // May be up to this large, will probably be lower in reality, in which case the pages won't actually get allocated
-        globals.compressed_tables[table_index] = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index+1, false)*globals.sorted_table->entry_count);
+        globals.compressed_tables[table_index] = new Buffer(EntrySizes::GetMaxEntrySize(k, table_index+1, false)*globals.sorted_table->Count());
         globals.compressed_tables[table_index]->entry_len = EntrySizes::GetMaxEntrySize(k, table_index+1, false);
         assert(globals.compressed_tables[table_index]->entry_len > 0);
         assert(globals.unsorted_table->entry_len > 0);
@@ -737,8 +741,6 @@ vector<Buffer*> RunPhase1(
         
         // end of parallel execution
 
-        globals.unsorted_table->entry_count = (*globals.unsorted_table->insert_pos)/globals.unsorted_table->entry_len;
-        globals.compressed_tables[table_index]->entry_count = (*globals.compressed_tables[table_index]->insert_pos)/globals.compressed_tables[table_index]->entry_len;
         assert(globals.compressed_tables[table_index]->entry_len > 0);
         assert(globals.unsorted_table->entry_len > 0);
         delete globals.sorted_table;
@@ -746,7 +748,7 @@ vector<Buffer*> RunPhase1(
         if (table_index == 0)
         {
         	F1Calculator f1(k, id);
-            for (uint64_t i = 0; i < globals.unsorted_table->entry_count; i++)
+            for (uint64_t i = 0; i < globals.unsorted_table->Count(); i++)
             {
     			uint8_t * entry = globals.unsorted_table->data + globals.unsorted_table->entry_len*i;
     			uint32_t pos_offset = k + kExtraBits;
@@ -754,7 +756,7 @@ vector<Buffer*> RunPhase1(
     			uint64_t pos = Util::SliceInt64FromBytes(entry, pos_offset, poslen);
     			uint64_t offset = Util::SliceInt64FromBytes(entry, pos_offset+poslen, kOffsetSize);
     			assert(offset > 0);
-    			assert(pos+offset < globals.compressed_tables[0]->entry_count);
+    			assert(pos+offset < globals.compressed_tables[0]->Count());
 
     			uint8_t * lentry = globals.compressed_tables[0]->data + globals.compressed_tables[0]->entry_len*pos;
     			uint8_t * rentry = globals.compressed_tables[0]->data + globals.compressed_tables[0]->entry_len*(pos+offset);
@@ -762,7 +764,7 @@ vector<Buffer*> RunPhase1(
     			uint64_t rx = Util::SliceInt64FromBytes(rentry, 0, k);
     			Bits fl = f1.CalculateF(Bits(lx, k));
     			Bits fr = f1.CalculateF(Bits(rx, k));
-    			//assert_matching(fl.GetValue(), fr.GetValue());
+    			assert_matching(fl.GetValue(), fr.GetValue());
             }
 
         }
@@ -810,21 +812,21 @@ vector<Buffer*> RunPhase1(
     globals.compressed_tables[6] = globals.unsorted_table;
 
     // Test that we can draw good proofs from this
-    uint64_t challenge = 0x28b40d;
+    uint64_t challenge = 0x123456;
     challenge = challenge%(1ULL<<k);
     uint64_t i;
     cout << "Looking for : " << challenge << endl;
-    for (i = 0; i < globals.compressed_tables[6]->entry_count; i++)
-    {
-    	uint64_t value = (*(uint64_t*)(globals.compressed_tables[6]->data+i*globals.compressed_tables[6]->entry_len));
-    	value = value%(1ULL<<k);
 
+    for (i = 0; i < globals.compressed_tables[6]->Count(); i++)
+    {
+		uint8_t * entry = globals.compressed_tables[6]->data + globals.compressed_tables[6]->entry_len*i;
+		uint64_t value = Util::SliceInt64FromBytes(entry, 0, k);
     	if (value == challenge)
     	{
     		break;
     	}
     }
-    if (i < globals.compressed_tables[6]->entry_count)
+    if (i < globals.compressed_tables[6]->Count())
     {
     	cout << "Got inputs: ";
     	vector<uint64_t> x(64);
@@ -850,7 +852,7 @@ vector<Buffer*> RunPhase1(
     			{
     				next_pos = pos;
     			}
-    			assert(next_pos < globals.compressed_tables[l]->entry_count);
+    			assert(next_pos < globals.compressed_tables[l]->Count());
     		}
     		uint8_t * entry = globals.compressed_tables[l]->data + globals.compressed_tables[l]->entry_len*next_pos;
     		x[j] = Util::SliceInt64FromBytes(entry, 0, k);
