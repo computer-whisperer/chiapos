@@ -66,7 +66,7 @@ void HelpAndQuit(cxxopts::Options options)
 }
 
 int main(int argc, char *argv[]) try {
-	mcheck(0);
+	std::cout.setf( std::ios_base::unitbuf );
 
     cxxopts::Options options(
         "ProofOfSpace", "Utility for plotting, generating and verifying proofs of space.");

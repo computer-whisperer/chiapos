@@ -23,6 +23,7 @@
 #include "b17phase3.hpp"
 #include "pos_constants.hpp"
 #include "util.hpp"
+#include "progress.hpp"
 
 // Writes the checkpoint tables. The purpose of these tables, is to store a list of ~2^k values
 // of size k (the proof of space outputs from table 7), in a way where they can be looked up for

@@ -22,6 +22,7 @@
 #include "entry_sizes.hpp"
 #include "exceptions.hpp"
 #include "pos_constants.hpp"
+#include "progress.hpp"
 //#include "phase3.hpp"
 
 // Results of phase 3. These are passed into Phase 4, so the checkpoint tables

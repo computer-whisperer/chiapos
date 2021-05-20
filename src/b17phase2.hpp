@@ -18,6 +18,10 @@
 #include "buffers.hpp"
 #include "entry_sizes.hpp"
 #include "radixsort.hpp"
+#include "progress.hpp"
+#include "util.hpp"
+
+#include "phase1_c.hpp"
 
 // Backpropagate takes in as input, a file on which forward propagation has been done.
 // The purpose of backpropagate is to eliminate any dead entries that don't contribute
@@ -189,10 +193,9 @@ std::vector<Buffer*> b17RunPhase2(
 
                         if (table_index == 7) {
                             // This is actually y for table 7
-                            entry_sort_key = Util::SliceInt64FromBytes(right_entry_buf, 0, k);
-                            entry_pos = Util::SliceInt64FromBytes(right_entry_buf, k, pos_size);
-                            entry_offset = Util::SliceInt64FromBytes(
-                                right_entry_buf, k + pos_size, kOffsetSize);
+                            entry_sort_key = ((struct Phase1Table7Entry *)right_entry_buf)->y;
+                            entry_pos = ((struct Phase1Table7Entry *)right_entry_buf)->pos;
+                            entry_offset = ((struct Phase1Table7Entry *)right_entry_buf)->offset;
                         } else {
                             entry_pos = Util::SliceInt64FromBytes(right_entry_buf, 0, pos_size);
 
@@ -258,12 +261,10 @@ std::vector<Buffer*> b17RunPhase2(
 
                         if (table_index > 2) {
                             // For tables 2-6, the entry is: pos, offset
-                            entry_pos = Util::SliceInt64FromBytes(left_entry_buf, 0, pos_size);
-                            entry_offset =
-                                Util::SliceInt64FromBytes(left_entry_buf, pos_size, kOffsetSize);
+                            entry_pos = ((struct Phase1PosOffsetEntry *)left_entry_buf)->pos;
+                            entry_offset = ((struct Phase1PosOffsetEntry *)left_entry_buf)->offset;
                         } else {
-                            entry_metadata =
-                                Util::SliceInt64FromBytes(left_entry_buf, 0, left_metadata_size);
+                        	entry_metadata = ((struct Phase1Table1Entry *)left_entry_buf)->x;
                         }
 
 

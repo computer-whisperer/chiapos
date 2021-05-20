@@ -37,7 +37,7 @@
 #include "calculate_bucket.hpp"
 #include "encoding.hpp"
 #include "exceptions.hpp"
-#include "phase1.hpp"
+#include "phase1_c.hpp"
 //#include "phase2.hpp"
 #include "b17phase2.hpp"
 //#include "phase3.hpp"
@@ -74,6 +74,8 @@ public:
         bool nobitfield = false,
         bool show_progress = false)
     {
+    	buffer_tmpdir = tmp_dirname;
+
         // Increases the open file limit, we will open a lot of files.
 #ifndef _WIN32
         struct rlimit the_limit = {600, 600};
@@ -212,17 +214,11 @@ public:
 
 		std::cout << std::endl
 				  << "Starting phase 1/4: Forward Propagation into tmp files... "
-				  << Timer::GetNow();
+				  << TimerGetNow();
 
 		Timer p1;
 		Timer all_phases;
-		vector<Buffer*> phase1_tables = RunPhase1(
-			k,
-			id,
-			stripe_size,
-			num_threads,
-			!nobitfield,
-			show_progress);
+		vector<Buffer*> phase1_tables = Phase1C(id, num_threads);
 		p1.PrintElapsed("Time for phase 1 =");
 
 		uint64_t finalsize=0;
@@ -233,7 +229,7 @@ public:
 
 		std::cout << std::endl
 			  << "Starting phase 2/4: Backpropagation without bitfield into tmp files... "
-			  << Timer::GetNow();
+			  << TimerGetNow();
 
 		Timer p2;
 		vector<Buffer*> phase2_tables = b17RunPhase2(
@@ -250,7 +246,7 @@ public:
 
 		std::cout << std::endl
 			  << "Starting phase 3/4: Compression without bitfield from tmp files into " << tmp_2_filename
-			  << " ... " << Timer::GetNow();
+			  << " ... " << TimerGetNow();
 		Timer p3;
 		b17Phase3Results res = b17RunPhase3(
 			//memory.get(),
@@ -272,7 +268,7 @@ public:
 
 		std::cout << std::endl
 			  << "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
-			  << " ... " << Timer::GetNow();
+			  << " ... " << TimerGetNow();
 		Timer p4;
         b17RunPhase4(k, k + 1, tmp2_disk, res, show_progress, 16);
         p4.PrintElapsed("Time for phase 4 =");

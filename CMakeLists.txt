@@ -128,12 +128,19 @@ set(BLAKE3_SRC
     src/b3/blake3_avx512_x86-64_unix.S
     src/b3/blake3_sse41_x86-64_unix.S
 )
+set(CHIAPOS_SRC
+   src/phase1_c.cpp
+   src/buffers.cpp
+   src/calculate_bucket.cpp
+   src/util.cpp
+)
 ENDIF()
 
 pybind11_add_module(chiapos ${CMAKE_CURRENT_SOURCE_DIR}/python-bindings/chiapos.cpp src/chacha8.c ${BLAKE3_SRC})
 
 add_executable(ProofOfSpace
     src/cli.cpp
+    ${CHIAPOS_SRC}
     src/chacha8.c
     ${BLAKE3_SRC}
 )
@@ -141,6 +148,7 @@ add_executable(ProofOfSpace
 add_executable(RunTests
     tests/test-main.cpp
     tests/test.cpp
+    ${CHIAPOS_SRC}
     src/chacha8.c
     ${BLAKE3_SRC}
 )
