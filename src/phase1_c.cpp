@@ -223,6 +223,8 @@ void* Phase1CThread(atomic_long& coordinator, uint8_t const* id, vector<Bucket>*
 	return NULL;
 }
 
+
+
 vector<Buffer*> Phase1C(uint8_t const* id, uint32_t num_threads)
 {
 	cout << "Allocating buckets" << endl;
@@ -302,7 +304,8 @@ vector<Buffer*> Phase1C(uint8_t const* id, uint32_t num_threads)
 
 		if (table_index >= 0)
 		{
-			buffer->SwapOutAsync();
+			if (table_index < 6)
+				buffer->SwapOutAsync();
 			phase1_buffers.push_back(buffer);
 		}
 

@@ -22,29 +22,44 @@
 
 extern std::string buffer_tmpdir;
 
-struct Buffer 
+class Buffer
 {
-	std::thread swapinthread;
-	std::thread swapoutthread;
-
-	std::string fname;
-	int fd;
+public:
     uint8_t *data = NULL;
     uint64_t data_len = 0;
+    bool remove_on_destroy = false;
     std::atomic<uint64_t>* insert_pos;
 
     uint64_t entry_len = 0;
 
     Buffer(const uint64_t size);
+    Buffer(const uint64_t size, std::string name);
     uint64_t GetInsertionOffset(uint64_t len);
     uint64_t PushEntry(Bits bits);
     uint64_t Count();
     ~Buffer();
 
-    void SwapOut();
-    void SwapIn();
     void SwapOutAsync();
-    void SwapInAsync();
+    void SwapInAsync(bool shared);
+
+    void WaitForSwapIn();
+    void WaitForSwapOut();
+
+    uint64_t InsertString(std::string s);
+    uint64_t InsertData(void * data, size_t data_len);
+
+    private:
+
+	std::thread swapinthread;
+	std::thread swapoutthread;
+	bool is_swapped = false;
+	bool is_swapping = false;
+
+	std::string fname;
+	int fd;
+
+    void SwapOut();
+    void SwapIn(bool shared);
 };
 
 

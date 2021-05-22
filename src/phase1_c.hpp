@@ -2,6 +2,7 @@
 #define PHASE1_C_HPP
 
 #include <vector>
+#include "pos_constants.hpp"
 #include "buffers.hpp"
 
 #define K 32
@@ -25,6 +26,7 @@ struct Phase1Table7Entry
 	uint64_t pos : phase1_pos_size;
 	uint64_t offset : kOffsetSize;
 };
+
 
 std::vector<Buffer*> Phase1C(uint8_t const* id, uint32_t num_threads);
 

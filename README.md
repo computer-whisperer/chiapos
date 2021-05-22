@@ -1,3 +1,9 @@
+
+# computer-whisperer's plotting mods
+Chia wallet for tips:
+xch1ym7y9dgker22ftlqavgfzvhgksrmye566mysk99dwkqjsu8el0qsm38495
+
+
 # Chia Proof of Space
 ![Build](https://github.com/Chia-Network/chiapos/workflows/Build/badge.svg)
 ![PyPI](https://img.shields.io/pypi/v/chiapos?logo=pypi)

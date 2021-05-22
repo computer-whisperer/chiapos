@@ -130,6 +130,7 @@ set(BLAKE3_SRC
 )
 set(CHIAPOS_SRC
    src/phase1_c.cpp
+   src/phase2_c.cpp
    src/buffers.cpp
    src/calculate_bucket.cpp
    src/util.cpp

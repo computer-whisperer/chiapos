@@ -39,7 +39,7 @@
 #include "exceptions.hpp"
 #include "phase1_c.hpp"
 //#include "phase2.hpp"
-#include "b17phase2.hpp"
+#include "phase2_c.hpp"
 //#include "phase3.hpp"
 #include "b17phase3.hpp"
 //#include "phase4.hpp"
@@ -203,9 +203,6 @@ public:
         std::ios_base::sync_with_stdio(false);
         std::ostream* prevstr = std::cin.tie(NULL);
 
-
-
-
 		// Scope for FileDisk
 
         FileDisk tmp2_disk(tmp_2_filename);
@@ -232,13 +229,8 @@ public:
 			  << TimerGetNow();
 
 		Timer p2;
-		vector<Buffer*> phase2_tables = b17RunPhase2(
-			phase1_tables,
-			k,
-			id,
-			memory_size,
-			show_progress,
-			num_threads);
+
+		vector<vector<atomic<uint8_t>>> used_entries = Phase2C(phase1_tables, num_threads);
 		p2.PrintElapsed("Time for phase 2 =");
 
 		// Now we open a new file, where the final contents of the plot will be stored.
@@ -252,7 +244,7 @@ public:
 			//memory.get(),
 			k,
 			tmp2_disk,
-			phase2_tables,
+			phase1_tables,
 			//tmp_1_disks,
 			//backprop_table_sizes,
 			id,
