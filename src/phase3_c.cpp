@@ -1,3 +1,4 @@
+#include "phase3_c.hpp"
 #include "phase2_c.hpp"
 #include "phase1_c.hpp"
 #include "buffers.hpp"
@@ -8,6 +9,7 @@
 #include <string>
 #include "util.hpp"
 #include "encoding.hpp"
+#include "entry_sizes.hpp"
 
 using namespace std;
 
@@ -101,7 +103,7 @@ void Phase3CThreadB(atomic_long& coordinator, vector<Bucket>& buckets, vector<ui
 	while (1)
 	{
 		uint32_t bucket_id = coordinator.fetch_add(1);
-		if (bucket_id > buckets.size()){
+		if (bucket_id >= buckets.size()){
 			break;
 		}
 	    struct {
@@ -110,35 +112,137 @@ void Phase3CThreadB(atomic_long& coordinator, vector<Bucket>& buckets, vector<ui
 		sort(buckets[bucket_id].entries.begin(), buckets[bucket_id].entries.end(), customLess);
 
 
-		for (auto &it : buckets[bucket_id].entries)
+		for (uint64_t i = 0; i < buckets[bucket_id].entries.size(); i++)
 		{
-			new_positions[it.orig_pos] = (it - buckets[bucket_id].entries.begin()) + buckets[bucket_id].output_base_pos;
+			new_positions[buckets[bucket_id].entries[i].orig_pos] = buckets[bucket_id].output_base_pos + i;
 		}
 	}
 }
 
-void Phase3CThreadC(atomic_long& coordinator, vector<Bucket>& buckets, Buffer& output_buffer, uint8_t table_index)
+void Phase3CThreadC(atomic_long& coordinator, vector<Bucket>& buckets, Buffer* output_buffer, uint64_t output_table_offset, uint8_t table_index)
 {
 	while (1)
 	{
-		uint32_t bucket_id = coordinator.fetch_add(1);
-		if (bucket_id > buckets.size()){
+		uint64_t park_size_bytes = EntrySizes::CalculateParkSize(K, table_index);
+
+		uint32_t park_id = coordinator.fetch_add(1);
+		// Output everything for this plot id
+
+		uint64_t park_starting_pos = kEntriesPerPark*park_id;
+		uint64_t bucket_id = 0;
+
+		vector<uint64_t> line_points;
+
+		while (bucket_id < buckets.size())
+		{
+			if (buckets[bucket_id].output_base_pos + buckets[bucket_id].entries.size() > park_starting_pos)
+			{
+				for (uint64_t i = park_starting_pos - buckets[bucket_id].output_base_pos; i < buckets[bucket_id].entries.size(); i++)
+				{
+					line_points.push_back(buckets[bucket_id].entries[i].line_point);
+
+					if (line_points.size() == kEntriesPerPark)
+					{
+						break;
+					}
+				}
+			}
+			if (line_points.size() == kEntriesPerPark)
+			{
+				break;
+			}
+			bucket_id++;
+		}
+
+		if (line_points.size() == 0)
+		{
 			break;
 		}
 
+        // Since we have approx 2^k line_points between 0 and 2^2k, the average
+        // space between them when sorted, is k bits. Much more efficient than storing each
+        // line point. This is diveded into the stub and delta. The stub is the least
+        // significant (k-kMinusStubs) bits, and largely random/incompressible. The small
+        // delta is the rest, which can be efficiently encoded since it's usually very
+        // small.
 
+		vector<uint64_t> park_stubs;
+		vector<uint8_t> park_deltas;
+		for (uint32_t i = 1; i < line_points.size(); i++)
+		{
+			uint128_t big_delta = line_points[i] - line_points[i-1];
+            uint64_t stub = big_delta & ((1ULL << (K - kStubMinusBits)) - 1);
+            uint64_t small_delta = big_delta >> (K - kStubMinusBits);
+            assert(small_delta < 256);
+            park_deltas.push_back(small_delta);
+            park_stubs.push_back(stub);
+		}
 
+	    // Parks are fixed size, so we know where to start writing. The deltas will not go over
+	    // into the next park.
+		uint8_t * park_start = output_buffer->data + output_table_offset + park_id * park_size_bytes;
+	    uint8_t * dest = park_start;
 
+	    *(uint64_t *)dest = line_points[0];
+	    dest += (line_point_bits + 7)/8;
+
+	    // We use ParkBits instead of Bits since it allows storing more data
+	    ParkBits park_stubs_bits;
+	    for (uint64_t stub : park_stubs) {
+	        park_stubs_bits.AppendValue(stub, (K - kStubMinusBits));
+	    }
+	    uint32_t stubs_size = EntrySizes::CalculateStubsSize(K);
+	    uint32_t stubs_valid_size = cdiv(park_stubs_bits.GetSize(), 8);
+	    park_stubs_bits.ToBytes(dest);
+	    memset(dest + stubs_valid_size, 0, stubs_size - stubs_valid_size);
+	    dest += stubs_size;
+
+	    // The stubs are random so they don't need encoding. But deltas are more likely to
+	    // be small, so we can compress them
+	    double R = kRValues[table_index - 1];
+	    uint8_t *deltas_start = dest + 2;
+	    size_t deltas_size = Encoding::ANSEncodeDeltas(park_deltas, R, deltas_start);
+
+	    if (!deltas_size) {
+	        // Uncompressed
+	        deltas_size = park_deltas.size();
+	        Util::IntToTwoBytesLE(dest, deltas_size | 0x8000);
+	        memcpy(deltas_start, park_deltas.data(), deltas_size);
+	    } else {
+	        // Compressed
+	        Util::IntToTwoBytesLE(dest, deltas_size);
+	    }
+
+	    dest += 2 + deltas_size;
+
+	    assert(park_size_bytes > (uint64_t)(dest - park_start));
 	}
 }
 
 
-void Phase3C(vector<Buffer*> phase1_buffers, vector<vector<atomic<uint8_t>>> phase2_used_entries, uint32_t num_threads, string id, string memo, string dest_fname)
+struct Phase3_Out Phase3C(
+		vector<Buffer*> phase1_buffers,
+		vector<vector<atomic<uint8_t>>>& phase2_used_entries,
+		uint32_t num_threads,
+		const uint8_t* memo,
+        uint32_t memo_len,
+        const uint8_t* id,
+        uint32_t id_len,
+		string dest_fname)
 {
 	phase1_buffers[0]->SwapInAsync(false);
 	phase1_buffers[1]->SwapInAsync(false);
 
-	Buffer output_buffer(100, dest_fname);
+	// Try to predict the final file size
+	uint64_t predicted_file_size_bytes = 128;// header
+	for (uint8_t table_index = 1; table_index < 7; table_index++)
+	{
+		uint64_t park_size_bytes = EntrySizes::CalculateParkSize(K, table_index);
+		uint64_t num_parks = phase1_buffers[table_index]->Count()/kEntriesPerPark;
+		predicted_file_size_bytes += park_size_bytes*num_parks;
+	}
+
+	Buffer* output_buffer = new Buffer(predicted_file_size_bytes, dest_fname);
 
     // 19 bytes  - "Proof of Space Plot" (utf-8)
     // 32 bytes  - unique plot id
@@ -148,29 +252,19 @@ void Phase3C(vector<Buffer*> phase1_buffers, vector<vector<atomic<uint8_t>>> pha
     // 2 bytes   - memo length
     // x bytes   - memo
 
-    output_buffer.InsertString("Proof of Space Plot");
-    output_buffer.InsertData((void*)id.data(), kIdLen);
-    *(uint8_t*)(output_buffer.data + output_buffer.GetInsertionOffset(1)) = K;
-    *(uint16_t*)(output_buffer.data + output_buffer.GetInsertionOffset(2)) = kFormatDescription.size();
-    output_buffer.InsertString(kFormatDescription);
-    *(uint16_t*)(output_buffer.data + output_buffer.GetInsertionOffset(2)) = memo.size();
-    output_buffer.InsertString(memo);
+    output_buffer->InsertString("Proof of Space Plot");
+    output_buffer->InsertData((void*)id, kIdLen);
+    *(uint8_t*)(output_buffer->data + output_buffer->GetInsertionOffset(1)) = K;
+    *(uint16_t*)(output_buffer->data + output_buffer->GetInsertionOffset(2)) = kFormatDescription.size();
+    output_buffer->InsertString(kFormatDescription);
+    *(uint16_t*)(output_buffer->data + output_buffer->GetInsertionOffset(2)) = memo_len;
+    output_buffer->InsertData((void*)memo, memo_len);
 
-    uint8_t pointers[10 * 8];
-    memset(pointers, 0, 10 * 8);
-    uint32_t pointers_offset = output_buffer.InsertData(pointers, sizeof(pointers));
+    uint8_t pointers[12 * 8];
+    uint32_t pointers_offset = output_buffer->InsertData(pointers, sizeof(pointers));
+    uint64_t * final_table_begin_pointers = (uint64_t*)output_buffer->data + pointers_offset;
 
-
-    std::vector<uint64_t> final_table_begin_pointers(12, 0);
-    final_table_begin_pointers[1] = output_buffer.insert_pos;
-
-
-    // These variables are used in the WriteParkToFile method. They are preallocatted here
-    // to save time.
-    uint64_t park_buffer_size = EntrySizes::CalculateLinePointSize(k) +
-                                EntrySizes::CalculateStubsSize(k) + 2 +
-                                EntrySizes::CalculateMaxDeltasSize(k, 1);
-
+    uint64_t output_table_offset = *(output_buffer->insert_pos);
 
 	vector<uint32_t> new_positions;
 	vector<Bucket> buckets(num_buckets);
@@ -179,14 +273,12 @@ void Phase3C(vector<Buffer*> phase1_buffers, vector<vector<atomic<uint8_t>>> pha
 		it.entries.reserve(mean_entries_in_bucket*1.2);
 	}
 
-	for (uint32_t table_index = 1; table_index < 6; table_index++)
+	for (uint32_t table_index = 1; table_index < 7; table_index++)
 	{
-		if (table_index < 6)
+		cout << "Starting table " << table_index << endl;
+		for (auto &it : buckets)
 		{
-			for (auto &it : buckets)
-			{
-				it.entries.clear();
-			}
+			it.entries.clear();
 		}
 
 		if (table_index < 6)
@@ -194,7 +286,10 @@ void Phase3C(vector<Buffer*> phase1_buffers, vector<vector<atomic<uint8_t>>> pha
 			phase1_buffers[table_index+1]->SwapInAsync(false);
 		}
 
-		phase1_buffers[table_index-1]->WaitForSwapIn();
+		if (table_index == 1)
+		{
+			phase1_buffers[table_index-1]->WaitForSwapIn();
+		}
 		phase1_buffers[table_index]->WaitForSwapIn();
 
 		cout << "Starting thread A" << endl;
@@ -234,6 +329,38 @@ void Phase3C(vector<Buffer*> phase1_buffers, vector<vector<atomic<uint8_t>>> pha
 			it.join();
 		}
 
-		delete phase1_buffers[table_index-1];
+		cout << "Starting thread C" << endl;
+
+		coordinator = 0;
+		threads.clear();
+		new_positions.resize(phase1_buffers[table_index]->Count());
+		for (uint32_t i = 0; i < num_threads; i++)
+		{
+			threads.push_back(thread(Phase3CThreadC, ref(coordinator), ref(buckets), output_buffer, output_table_offset, table_index));
+		}
+
+		for (auto &it: threads)
+		{
+			it.join();
+		}
+
+		Encoding::ANSFree(kRValues[table_index - 1]);
+
+		final_table_begin_pointers[table_index] = output_table_offset;
+		// setup output_table_offset for next iteration
+		uint64_t park_size_bytes = EntrySizes::CalculateParkSize(K, table_index);
+		uint64_t parks_needed = (ctr+kEntriesPerPark-1)/kEntriesPerPark;
+		output_table_offset = output_buffer->GetInsertionOffset(parks_needed*park_size_bytes);
+
+		if (table_index == 1)
+			delete phase1_buffers[0];
+		if (table_index < 6)
+			delete phase1_buffers[table_index];
 	}
+	final_table_begin_pointers[7] = output_table_offset;
+	struct Phase3_Out o;
+	o.output_buff = output_buffer;
+	o.pointer_table_offset = pointers_offset;
+	o.new_table7_positions = new_positions;
+	return o;
 }

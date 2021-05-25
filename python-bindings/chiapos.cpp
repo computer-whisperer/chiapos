@@ -56,19 +56,13 @@ PYBIND11_MODULE(chiapos, m)
                 const uint8_t *id_ptr = reinterpret_cast<const uint8_t *>(id_str.data());
                 try {
                     dp.CreatePlotDisk(tmp_dir,
-                                      tmp2_dir,
                                       final_dir,
                                       filename,
-                                      k,
                                       memo_ptr,
                                       len(memo),
                                       id_ptr,
                                       len(id),
-                                      buffmegabytes,
-                                      num_buckets,
-                                      stripe_size,
-                                      num_threads,
-                                      nobitfield);
+                                      num_threads);
                 } catch (const std::exception &e) {
                     std::cout << "Caught plotting error: " << e.what() << std::endl;
                     throw e;

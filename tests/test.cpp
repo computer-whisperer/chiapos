@@ -546,7 +546,7 @@ void PlotAndTestProofOfSpace(
     DiskPlotter plotter = DiskPlotter();
     uint8_t memo[5] = {1, 2, 3, 4, 5};
     plotter.CreatePlotDisk(
-        ".", ".", ".", filename, k, memo, 5, plot_id, 32, buffer, 0, stripe_size, num_threads);
+        ".", ".", filename, memo, 5, plot_id, 32, buffer, num_threads);
     TestProofOfSpace(filename, iterations, k, plot_id, num_proofs);
     REQUIRE(remove(filename.c_str()) == 0);
 }
@@ -586,7 +586,7 @@ TEST_CASE("Invalid plot")
             DiskPlotter plotter = DiskPlotter();
             uint8_t memo[5] = {1, 2, 3, 4, 5};
             uint8_t k = 20;
-            plotter.CreatePlotDisk(".", ".", ".", filename, k, memo, 5, plot_id_1, 32, 200, 32, 8192, 2);
+           // plotter.CreatePlotDisk(".", ".", filename, "memo", string((const char*)plot_id_1, 32), 200, 32, 8192, 2);
             DiskProver prover(filename);
             uint8_t* proof_data = new uint8_t[8 * k];
             uint8_t challenge[32];

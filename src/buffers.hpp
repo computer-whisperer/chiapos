@@ -47,6 +47,7 @@ public:
 
     uint64_t InsertString(std::string s);
     uint64_t InsertData(void * data, size_t data_len);
+    void Truncate(uint64_t new_size);
 
     private:
 

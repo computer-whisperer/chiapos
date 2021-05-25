@@ -23,8 +23,10 @@ Buffer::Buffer(const uint64_t size) : Buffer(size, buffer_tmpdir + "/chiapos_tmp
 Buffer::Buffer(const uint64_t size, string name)
 {
     data_len = size;
+    fname = name;
     insert_pos = new std::atomic<uint64_t>(0);
     fd = open(fname.c_str(), O_RDWR|O_CREAT);
+    assert(fd > 0);
 	int res = ftruncate(fd, data_len);
 	if (res < 0)
 	{
@@ -54,10 +56,10 @@ uint64_t Buffer::InsertString(string s)
 	return o;
 }
 
-uint64_t Buffer::InsertData(void * data, size_t data_len)
+uint64_t Buffer::InsertData(void * data_in, size_t data_len)
 {
 	uint64_t o = GetInsertionOffset(data_len);
-    memcpy(data + o, data, data_len);
+    memcpy(data + o, data_in, data_len);
     return o;
 }
 
@@ -68,10 +70,24 @@ uint64_t Buffer::Count()
 
 Buffer::~Buffer()
 {
-  SwapOut();
-  close(fd);
-  if (remove_on_destroy)
+	swapinthread.join();
+	swapoutthread.join();
+	SwapOut();
+	close(fd);
+	if (remove_on_destroy)
 	  remove(fname.c_str());
+}
+
+void Buffer::Truncate(uint64_t new_size)
+{
+	SwapOutAsync();
+	WaitForSwapOut();
+	data_len = new_size;
+	int res = ftruncate(fd, new_size);
+	if (res < 0)
+	{
+		std::cout << "log(-1) failed: " << std::strerror(errno) << '\n';
+	}
 }
 
 void Buffer::SwapOut()

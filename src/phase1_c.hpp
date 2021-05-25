@@ -28,6 +28,6 @@ struct Phase1Table7Entry
 };
 
 
-std::vector<Buffer*> Phase1C(uint8_t const* id, uint32_t num_threads);
+std::vector<Buffer*> Phase1C(const uint8_t* id, uint32_t num_threads);
 
 #endif

@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) try {
     uint8_t k = 22;
     uint32_t num_buckets = 0;
     uint32_t num_stripes = 65535;
-    uint8_t num_threads = 0;
+    uint32_t num_threads = 0;
     string filename = "plot.dat";
     string tempdir = ".";
     string tempdir2 = ".";
@@ -91,7 +91,7 @@ int main(int argc, char *argv[]) try {
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
-            "r, threads", "Number of threads", cxxopts::value<uint8_t>(num_threads))(
+            "r, threads", "Number of threads", cxxopts::value<uint32_t>(num_threads))(
                 "u, buckets", "Number of buckets", cxxopts::value<uint32_t>(num_buckets))(
             "s, stripes", "Size of stripes", cxxopts::value<uint32_t>(num_stripes))(
             "t, tempdir", "Temporary directory", cxxopts::value<string>(tempdir))(
@@ -141,19 +141,13 @@ int main(int argc, char *argv[]) try {
         DiskPlotter plotter = DiskPlotter();
         plotter.CreatePlotDisk(
                 tempdir,
-                tempdir2,
                 finaldir,
                 filename,
-                k,
                 memo_bytes.data(),
                 memo_bytes.size(),
                 id_bytes.data(),
                 id_bytes.size(),
-                buffmegabytes,
-                num_buckets,
-                num_stripes,
                 num_threads,
-                nobitfield,
                 show_progress);
     } else if (operation == "prove") {
         if (argc < 3) {
@@ -281,7 +275,7 @@ int main(int argc, char *argv[]) try {
         }
         std::cout << "Total success: " << success << "/" << iterations << ", "
                   << (success * 100 / static_cast<double>(iterations)) << "%." << std::endl;
-        if (show_progress) { progress(4, 1, 1); }
+       // if (show_progress) { progress(4, 1, 1); }
     } else {
         cout << "Invalid operation. Use create/prove/verify/check" << endl;
     }

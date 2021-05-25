@@ -104,7 +104,7 @@ inline void insert_bits(uint8_t* dst, uint64_t dst_start_offset, uint8_t* src, u
 	}
 }
 
-void* Phase1CThread(atomic_long& coordinator, uint8_t const* id, vector<Bucket>* read_buckets, vector<Bucket>* write_buckets, Buffer* output_buffer, int table_index)
+void* Phase1CThread(atomic_long& coordinator, const uint8_t* id, vector<Bucket>* read_buckets, vector<Bucket>* write_buckets, Buffer* output_buffer, int table_index)
 {
 	if (table_index == -1)
 	{
@@ -139,84 +139,108 @@ void* Phase1CThread(atomic_long& coordinator, uint8_t const* id, vector<Bucket>*
 	{
 		vector<vector<uint16_t>> rmap(kBC);
 	    std::vector<uint16_t> rmap_clean;
-		FxCalculator fx(K, table_index+2);
+		FxCalculator fx;
+        if (table_index < 6)
+        {
+            fx = FxCalculator(K, table_index+2);
+        }
 		while (1)
 		{
 			uint64_t bucket_id = coordinator.fetch_add(1);
 			if (bucket_id >= read_buckets->size())
 				break;
 
-	        uint16_t parity = bucket_id % 2;
+            if (table_index == 6)
+            {
+                // Sort the bucket
+                struct {
+                    bool operator()(struct PosOffsetYCBucketedEntry a, struct PosOffsetYCBucketedEntry b) const { return a.y_offset < b.y_offset; }
+                } customLess;
+                sort(read_buckets->at(bucket_id).entries.begin(), read_buckets->at(bucket_id).entries.end(), customLess);
 
-	        if ((table_index < 6) && (bucket_id < read_buckets->size()-1))
-	        {
-		        for (size_t yl : rmap_clean) {
-		            rmap[yl].clear();
-		        }
-		        rmap_clean.clear();
-		        for (size_t pos_R = 0; pos_R < read_buckets->at(bucket_id+1).entries.size(); pos_R++) {
-		            uint64_t r_y = read_buckets->at(bucket_id+1).entries[pos_R].y_offset;
-		            if (rmap[r_y].size() == 0)
-		            {
-			            rmap_clean.push_back(r_y);
-		            }
-		            rmap[r_y].push_back(pos_R);
-		        }
-	        }
+                // Output to destination
+                for (uint64_t pos_L = 0; pos_L < read_buckets->at(bucket_id).entries.size(); pos_L++){
+                    auto left_entry = read_buckets->at(bucket_id).entries[pos_L];
+                    struct Phase1Table7Entry* left_dest = (struct Phase1Table7Entry*)(output_buffer->data +
+                                                          (read_buckets->at(bucket_id).output_base_pos + pos_L) *
+                                                          output_buffer->entry_len);
+                    left_dest->y = (left_entry.y_offset + bucket_id * kBC) % (1ULL << K);
+                    left_dest->pos = left_entry.pos;
+                    left_dest->offset = left_entry.offset;
+                }
+            }
+            else
+            {
+                uint16_t parity = bucket_id % 2;
+                if ((bucket_id < read_buckets->size()-1))
+                {
+                    for (size_t yl : rmap_clean) {
+                        rmap[yl].clear();
+                    }
+                    rmap_clean.clear();
+                    for (size_t pos_R = 0; pos_R < read_buckets->at(bucket_id+1).entries.size(); pos_R++) {
+                        uint64_t r_y = read_buckets->at(bucket_id+1).entries[pos_R].y_offset;
+                        if (rmap[r_y].size() == 0)
+                        {
+                            rmap_clean.push_back(r_y);
+                        }
+                        rmap[r_y].push_back(pos_R);
+                    }
+                }
+                for (size_t pos_L = 0; pos_L < read_buckets->at(bucket_id).entries.size(); pos_L++) {
+                    auto left_entry = read_buckets->at(bucket_id).entries[pos_L];
+                    uint64_t left_y = left_entry.y_offset + bucket_id * kBC;
+                    uint8_t* left_dest = output_buffer->data +
+                                         (read_buckets->at(bucket_id).output_base_pos + pos_L) *
+                                             output_buffer->entry_len;
+                    if (table_index == 0) {
+                        ((struct Phase1Table1Entry*)left_dest)->x = left_entry.c;
+                    } else {
+                        ((struct Phase1PosOffsetEntry*)left_dest)->pos = left_entry.pos;
+                        ((struct Phase1PosOffsetEntry*)left_dest)->offset = left_entry.offset;
+                    }
 
-	        for (size_t pos_L = 0; pos_L < read_buckets->at(bucket_id).entries.size(); pos_L++) {
-	            auto left_entry = read_buckets->at(bucket_id).entries[pos_L];
-	            uint64_t left_y = left_entry.y_offset + bucket_id*kBC;
-	            uint8_t * left_dest = output_buffer->data + (read_buckets->at(bucket_id).output_base_pos+pos_L)*output_buffer->entry_len;
-	            if (table_index == 0)
-	            {
-	            	((struct Phase1Table1Entry *)left_dest)->x = left_entry.c;
-	            }
-	            else if (table_index < 6)
-	            {
-	            	((struct Phase1PosOffsetEntry *)left_dest)->pos = left_entry.pos;
-	            	((struct Phase1PosOffsetEntry *)left_dest)->offset = left_entry.offset;
-	            }
-	            else
-	            {
-	            	((struct Phase1Table7Entry *)left_dest)->y = left_entry.y_offset + bucket_id*kBC;
-	            	((struct Phase1Table7Entry *)left_dest)->pos = left_entry.pos;
-	            	((struct Phase1Table7Entry *)left_dest)->offset = left_entry.offset;
-	            }
+                    if (bucket_id < (read_buckets->size() - 1)) {
+                        for (uint8_t i = 0; i < kExtraBitsPow; i++) {
+                            uint16_t r_target = L_targets[parity][left_entry.y_offset][i];
+                            for (auto& pos_R : rmap[r_target]) {
+                                auto right_entry = read_buckets->at(bucket_id + 1).entries[pos_R];
+                                uint64_t right_y = right_entry.y_offset + (bucket_id + 1) * kBC;
 
-	            if ((table_index < 6) && (bucket_id < (read_buckets->size()-1)))
-	            {
-		            for (uint8_t i = 0; i < kExtraBitsPow; i++) {
-		                uint16_t r_target = L_targets[parity][left_entry.y_offset][i];
-		                for (auto &pos_R : rmap[r_target])
-		                {
-		                	auto right_entry = read_buckets->at(bucket_id+1).entries[pos_R];
-		                	uint64_t right_y = right_entry.y_offset + (bucket_id+1)*kBC;
+                                uint64_t c_len = kVectorLens[table_index + 2] * K;
 
-		                	uint64_t c_len = kVectorLens[table_index+2] * K;
+                                auto out = fx.CalculateBucket(
+                                    Bits(left_y, K + kExtraBits),
+                                    Bits(left_entry.c, c_len),
+                                    Bits(right_entry.c, c_len));
 
-		                	auto out = fx.CalculateBucket(Bits(left_y, K+kExtraBits), Bits(left_entry.c, c_len), Bits(right_entry.c, c_len));
-
-		                	struct PosOffsetYCBucketedEntry entry;
-		                	uint64_t bucket_id_out = out.first.GetValue()/kBC;
-		                	entry.pos = pos_L + read_buckets->at(bucket_id).output_base_pos;
-		                	uint64_t offset = read_buckets->at(bucket_id+1).output_base_pos + pos_R - entry.pos;
-		                	entry.offset = offset;
-		                	//assert(offset < (1ULL<<kOffsetSize));
-		                	entry.y_offset = out.first.GetValue()%kBC;
-		                	if (table_index < 5)
-		                	{
-			                	uint8_t buff[16];
-			                	memset(buff, 0, sizeof(buff));
-			                	out.second.ToBytes(buff);
-			                	entry.c = Util::SliceInt128FromBytes(buff, 0, kVectorLens[table_index+3] * K);
-		                	}
-		                	write_buckets->at(bucket_id_out).entriesMutex.lock();
-		        			write_buckets->at(bucket_id_out).entries.push_back(entry);
-		        			write_buckets->at(bucket_id_out).entriesMutex.unlock();
-		                }
-		            }
-	            }
+                                struct PosOffsetYCBucketedEntry entry;
+                                entry.pos = pos_L + read_buckets->at(bucket_id).output_base_pos;
+                                uint64_t offset = read_buckets->at(bucket_id + 1).output_base_pos +
+                                                  pos_R - entry.pos;
+                                entry.offset = offset;
+                                // assert(offset < (1ULL<<kOffsetSize));
+                                uint64_t y = out.first.GetValue();
+                                if (table_index < 5) {
+                                    uint8_t buff[16];
+                                    memset(buff, 0, sizeof(buff));
+                                    out.second.ToBytes(buff);
+                                    entry.c = Util::SliceInt128FromBytes(
+                                        buff, 0, kVectorLens[table_index + 3] * K);
+                                }
+                                else
+                                {
+                                    y %= (1ULL << K);
+                                }
+                                uint64_t bucket_id_out = y/kBC;
+                                entry.y_offset = y%kBC;
+                                write_buckets->at(bucket_id_out).entriesMutex.lock();
+                                write_buckets->at(bucket_id_out).entries.push_back(entry);
+                                write_buckets->at(bucket_id_out).entriesMutex.unlock();
+                            }
+                        }
+                    }
+                }
 	        }
 		}
 	}
@@ -225,7 +249,7 @@ void* Phase1CThread(atomic_long& coordinator, uint8_t const* id, vector<Bucket>*
 
 
 
-vector<Buffer*> Phase1C(uint8_t const* id, uint32_t num_threads)
+vector<Buffer*> Phase1C(const uint8_t* id, uint32_t num_threads)
 {
 	cout << "Allocating buckets" << endl;
 	vector<Bucket>* write_buckets = new vector<Bucket>(num_buckets);
