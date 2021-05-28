@@ -17,11 +17,10 @@
 
 #include "buffers.hpp"
 #include "entry_sizes.hpp"
-#include "radixsort.hpp"
+#include "phase1.hpp"
 #include "progress.hpp"
+#include "radixsort.hpp"
 #include "util.hpp"
-
-#include "phase1_c.hpp"
 
 // Backpropagate takes in as input, a file on which forward propagation has been done.
 // The purpose of backpropagate is to eliminate any dead entries that don't contribute

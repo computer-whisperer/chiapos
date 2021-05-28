@@ -28,16 +28,15 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
-
-#include "chia_filesystem.hpp"
 
 #include "calculate_bucket.hpp"
+#include "chia_filesystem.hpp"
 #include "encoding.hpp"
 #include "exceptions.hpp"
-#include "phase1_c.hpp"
+#include "phase1.hpp"
 //#include "phase2.hpp"
 #include "phase2_c.hpp"
 //#include "phase3.hpp"
@@ -67,6 +66,7 @@ public:
         uint32_t num_threads_input = 0,
         bool show_progress = false)
     {
+        buffer_use_tmp = false;
     	buffer_tmpdir = tmp_dirname;
 
         // Increases the open file limit, we will open a lot of files.
@@ -153,6 +153,8 @@ public:
         p4.PrintElapsed("Time for phase 4 =");
 
         phase3_out.output_buff->Truncate(finalsize);
+        phase3_out.output_buff->remove_on_destroy = false;
+        delete phase3_out.output_buff;
 
 
         std::cin.tie(prevstr);

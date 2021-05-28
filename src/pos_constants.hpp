@@ -67,7 +67,7 @@ const double kMaxAverageDeltaTable1 = 5.6;
 const double kMaxAverageDelta = 3.5;
 
 // C3 entries contain deltas for f7 values, the max average size is the following
-const double kC3BitsPerEntry = 2.4;
+const double kC3BitsPerEntry = 2.8;
 
 // The number of bits in the stub is k minus this value
 const uint8_t kStubMinusBits = 3;

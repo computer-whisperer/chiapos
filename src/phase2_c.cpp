@@ -1,9 +1,11 @@
 #include "phase2_c.hpp"
-#include "phase1_c.hpp"
-#include "buffers.hpp"
-#include <vector>
+
 #include <atomic>
 #include <thread>
+#include <vector>
+
+#include "buffers.hpp"
+#include "phase1.hpp"
 #include "util.hpp"
 
 using namespace std;

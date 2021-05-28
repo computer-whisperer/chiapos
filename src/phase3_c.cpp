@@ -1,15 +1,17 @@
 #include "phase3_c.hpp"
-#include "phase2_c.hpp"
-#include "phase1_c.hpp"
-#include "buffers.hpp"
-#include <vector>
+
 #include <atomic>
 #include <mutex>
-#include <thread>
 #include <string>
-#include "util.hpp"
+#include <thread>
+#include <vector>
+
+#include "buffers.hpp"
 #include "encoding.hpp"
 #include "entry_sizes.hpp"
+#include "phase1.hpp"
+#include "phase2_c.hpp"
+#include "util.hpp"
 
 using namespace std;
 
@@ -23,8 +25,8 @@ const uint64_t mean_entries_in_bucket = (1ULL << K)/num_buckets;
 
 struct BucketEntry
 {
-		uint64_t orig_pos : phase1_pos_size;
-		uint32_t line_point : 11;
+    uint64_t orig_pos : phase1_pos_size;
+    uint32_t line_point : 11;
 };
 
 struct Bucket
@@ -68,6 +70,7 @@ void Phase3CThreadA(vector<Buffer*>& phase1_buffers, vector<atomic<uint8_t>>& ph
 				pos = ((struct Phase1Table7Entry *)entry)->pos;
 				offset = ((struct Phase1Table7Entry *)entry)->offset;
 			}
+            assert(pos + offset < (1ULL << phase1_pos_size));
 
 			uint64_t l_val;
 			uint64_t r_val;
@@ -76,6 +79,8 @@ void Phase3CThreadA(vector<Buffer*>& phase1_buffers, vector<atomic<uint8_t>>& ph
 			{
 				l_val = ((struct Phase1Table1Entry *)(phase1_buffers[table_index-1]->data + phase1_buffers[table_index-1]->entry_len*pos))->x;
 				r_val = ((struct Phase1Table1Entry *)(phase1_buffers[table_index-1]->data + phase1_buffers[table_index-1]->entry_len*(pos+offset)))->x;
+                assert(l_val < (1ULL << K));
+                assert(r_val < (1ULL << K));
 			}
 			else
 			{
@@ -140,6 +145,11 @@ void Phase3CThreadC(atomic_long& coordinator, vector<Bucket>& buckets, Buffer* o
 				for (uint64_t i = park_starting_pos - buckets[bucket_id].output_base_pos; i < buckets[bucket_id].entries.size(); i++)
 				{
 					line_points.push_back(buckets[bucket_id].entries[i].line_point);
+
+                    if ((i == 63007ULL))
+                    {
+                        cout << "Ha" << endl;
+                    }
 
 					if (line_points.size() == kEntriesPerPark)
 					{
@@ -224,10 +234,10 @@ struct Phase3_Out Phase3C(
 		vector<Buffer*> phase1_buffers,
 		vector<vector<atomic<uint8_t>>>& phase2_used_entries,
 		uint32_t num_threads,
-		const uint8_t* memo,
-        uint32_t memo_len,
         const uint8_t* id,
         uint32_t id_len,
+		const uint8_t* memo,
+        uint32_t memo_len,
 		string dest_fname)
 {
 	phase1_buffers[0]->SwapInAsync(false);
@@ -242,7 +252,12 @@ struct Phase3_Out Phase3C(
 		predicted_file_size_bytes += park_size_bytes*num_parks;
 	}
 
-	Buffer* output_buffer = new Buffer(predicted_file_size_bytes, dest_fname);
+    uint64_t total_C1_entries = cdiv(phase1_buffers[6]->Count(), kCheckpoint1Interval);
+    uint64_t total_C2_entries = cdiv(total_C1_entries, kCheckpoint2Interval);
+    uint32_t size_C3 = EntrySizes::CalculateC3Size(K);
+    predicted_file_size_bytes += (total_C1_entries + 1) * (Util::ByteAlign(K) / 8) + (total_C2_entries + 1) * (Util::ByteAlign(K) / 8) + (total_C1_entries)*size_C3;
+
+    Buffer* output_buffer = new Buffer(predicted_file_size_bytes*1.2, dest_fname);
 
     // 19 bytes  - "Proof of Space Plot" (utf-8)
     // 32 bytes  - unique plot id
@@ -255,14 +270,15 @@ struct Phase3_Out Phase3C(
     output_buffer->InsertString("Proof of Space Plot");
     output_buffer->InsertData((void*)id, kIdLen);
     *(uint8_t*)(output_buffer->data + output_buffer->GetInsertionOffset(1)) = K;
-    *(uint16_t*)(output_buffer->data + output_buffer->GetInsertionOffset(2)) = kFormatDescription.size();
+
+    *(uint16_t*)(output_buffer->data + output_buffer->GetInsertionOffset(2)) = bswap_16(kFormatDescription.size());
     output_buffer->InsertString(kFormatDescription);
-    *(uint16_t*)(output_buffer->data + output_buffer->GetInsertionOffset(2)) = memo_len;
+    *(uint16_t*)(output_buffer->data + output_buffer->GetInsertionOffset(2)) = bswap_16(memo_len);
     output_buffer->InsertData((void*)memo, memo_len);
 
     uint8_t pointers[12 * 8];
     uint32_t pointers_offset = output_buffer->InsertData(pointers, sizeof(pointers));
-    uint64_t * final_table_begin_pointers = (uint64_t*)output_buffer->data + pointers_offset;
+    uint64_t * final_table_begin_pointers = (uint64_t*)(output_buffer->data + pointers_offset);
 
     uint64_t output_table_offset = *(output_buffer->insert_pos);
 
@@ -346,18 +362,19 @@ struct Phase3_Out Phase3C(
 
 		Encoding::ANSFree(kRValues[table_index - 1]);
 
-		final_table_begin_pointers[table_index] = output_table_offset;
+		final_table_begin_pointers[table_index-1] = bswap_64(output_table_offset);
 		// setup output_table_offset for next iteration
 		uint64_t park_size_bytes = EntrySizes::CalculateParkSize(K, table_index);
 		uint64_t parks_needed = (ctr+kEntriesPerPark-1)/kEntriesPerPark;
-		output_table_offset = output_buffer->GetInsertionOffset(parks_needed*park_size_bytes);
+		output_buffer->GetInsertionOffset(parks_needed*park_size_bytes);
+        output_table_offset = *(output_buffer->insert_pos);
 
 		if (table_index == 1)
 			delete phase1_buffers[0];
 		if (table_index < 6)
 			delete phase1_buffers[table_index];
 	}
-	final_table_begin_pointers[7] = output_table_offset;
+	final_table_begin_pointers[6] = bswap_64(output_table_offset);
 	struct Phase3_Out o;
 	o.output_buff = output_buffer;
 	o.pointer_table_offset = pointers_offset;

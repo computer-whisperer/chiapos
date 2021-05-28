@@ -128,9 +128,7 @@ set(BLAKE3_SRC
     src/b3/blake3_avx512_x86-64_unix.S
     src/b3/blake3_sse41_x86-64_unix.S
 )
-set(CHIAPOS_SRC
-   src/phase1_c.cpp
-   src/phase2_c.cpp
+set(CHIAPOS_SRC src/phase2_c.cpp
    src/phase3_c.cpp
    src/phase4_c.cpp
    src/buffers.cpp

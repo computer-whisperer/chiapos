@@ -82,7 +82,8 @@ public:
 
         memcpy(this->id, header.id, sizeof(header.id));
         this->k = header.k;
-        SafeSeek(disk_file, offsetof(struct plot_header, fmt_desc) + fmt_desc_len);
+        uint16_t offset = offsetof(struct plot_header, fmt_desc) + fmt_desc_len;
+        SafeSeek(disk_file, offset);
 
         uint8_t size_buf[2];
         SafeRead(disk_file, size_buf, 2);
@@ -636,6 +637,7 @@ private:
     // recursively calling GetInputs for table 4.
     std::vector<Bits> GetInputs(std::ifstream& disk_file, uint64_t position, uint8_t depth)
     {
+        assert(position < (1ULL << k));
         uint128_t line_point = ReadLinePoint(disk_file, depth, position);
         std::pair<uint64_t, uint64_t> xy = Encoding::LinePointToSquare(line_point);
 

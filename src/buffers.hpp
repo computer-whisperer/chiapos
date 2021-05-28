@@ -21,10 +21,13 @@
 #include "bits.hpp"
 
 extern std::string buffer_tmpdir;
+extern bool buffer_use_tmp;
 
 class Buffer
 {
 public:
+    bool is_file_backed = true;
+    bool is_shared;
     uint8_t *data = NULL;
     uint64_t data_len = 0;
     bool remove_on_destroy = false;
@@ -32,8 +35,7 @@ public:
 
     uint64_t entry_len = 0;
 
-    Buffer(const uint64_t size);
-    Buffer(const uint64_t size, std::string name);
+    Buffer(const uint64_t size, std::string name="");
     uint64_t GetInsertionOffset(uint64_t len);
     uint64_t PushEntry(Bits bits);
     uint64_t Count();
@@ -57,7 +59,7 @@ public:
 	bool is_swapping = false;
 
 	std::string fname;
-	int fd;
+	int fd = -1;
 
     void SwapOut();
     void SwapIn(bool shared);
